@@ -135,7 +135,7 @@ pub fn note_focus() {
 pub fn document_json(s: &Session) -> Json {
     let id = document_id(s);
     let l = layer(s);
-    let open = l.questions.iter().filter(|q| q.status != layer::QuestionStatus::Answered).count();
+    let open = l.questions.iter().filter(|q| q.status.is_open()).count();
     let listeners: Vec<Json> = presence::listeners_of(&id)
         .into_iter()
         .map(|x| serde_json::json!({"listener": x.listener, "label": x.label, "lastSeen": x.last_seen}))
@@ -171,6 +171,8 @@ pub struct Render {
 /// The layer's state in a session (`Session::ext`).
 #[derive(Default)]
 pub struct State {
+    /// This session's own number (sessions all start at document 1: caches key on this too).
+    uid: u64,
     doc_id: Option<u64>,
     layer: Arc<Layer>,
     pub render: Option<Render>,
@@ -185,10 +187,20 @@ pub fn ping(s: &Session) -> Option<presence::Ping> {
     s.ext.get::<State>().and_then(|st| st.ping.clone())
 }
 
+static NEXT_UID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// The session's own number (0 before the layer is loaded).
+pub fn session_uid(s: &Session) -> u64 {
+    s.ext.get::<State>().map_or(0, |st| st.uid)
+}
+
 /// Loads the layer of the session's document (again after a new document was opened).
 pub fn ensure(s: &mut Session) {
     let id = s.document_id();
     let Some(st) = s.ext.get_mut::<State>() else { return };
+    if st.uid == 0 {
+        st.uid = NEXT_UID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
     if st.doc_id != Some(id) {
         st.doc_id = Some(id);
         st.layer = Arc::new(layer::read_from(&s.doc));
@@ -340,7 +352,7 @@ thread_local! {
     /// The places before each running command (nested commands stack up).
     static PLACES_BEFORE: std::cell::RefCell<Vec<Option<topics::Before>>> = const { std::cell::RefCell::new(Vec::new()) };
     /// A question asked on the client's copy: the passage in the template (see [`template_range`]).
-    static PREVIEW_ASK: std::cell::RefCell<Option<(Pos, Pos, bool)>> = const { std::cell::RefCell::new(None) };
+    static PREVIEW_ASK: std::cell::RefCell<Option<Traced>> = const { std::cell::RefCell::new(None) };
     /// The reader's selection in the client's copy, to put back after a command ran on the template.
     static READER_SEL: std::cell::RefCell<Vec<Option<(Pos, Pos)>>> = const { std::cell::RefCell::new(Vec::new()) };
     /// The selection a Copy widened over places' bookmarks, to put back after it.
@@ -372,7 +384,7 @@ impl Observer for Keeper {
         // A question asked on the client's copy goes on the template paragraph it was rendered from.
         let mut asked = None;
         if id == "agent.ask" && !commands::is_agent(params) && render_state(s).is_some() && !commands::in_agent_exec() {
-            asked = topic_cmds::reader_range(s, params).ok().and_then(|(a, b)| template_range(s, &a, &b));
+            asked = trace(s, params);
         }
         let reader_sel = asked.is_some().then(|| {
             let (a, b) = s.sel.ordered();
@@ -380,8 +392,8 @@ impl Observer for Keeper {
         });
         READER_SEL.with(|w| w.borrow_mut().push(reader_sel));
         let swapped = if (on_template(id) || asked.is_some()) && !commands::in_agent_exec() { template_in(s) } else { None };
-        if let Some((a, b, _)) = &asked {
-            s.sel = Selection { anchor: a.clone(), focus: b.clone() };
+        if let Some(t) = &asked {
+            s.sel = Selection { anchor: t.main.0.clone(), focus: t.main.1.clone() };
         }
         PREVIEW_ASK.with(|w| *w.borrow_mut() = asked);
         SWAPPED.with(|w| w.borrow_mut().push(swapped));
@@ -441,14 +453,14 @@ impl Observer for Keeper {
 }
 
 /// A position with its offset counted in the paragraph's text without inline markers.
-fn text_offset(doc: &Document, p: &Pos) -> Pos {
+pub(crate) fn text_offset(doc: &Document, p: &Pos) -> Pos {
     let text = anchor::para_text(doc, &p.path).unwrap_or("");
     let objs = text.get(..p.off.min(text.len())).map_or(0, |t| t.matches(wordcraft_doc::para::OBJ).count());
     Pos { off: p.off.saturating_sub(objs * wordcraft_doc::para::OBJ.len_utf8()), ..p.clone() }
 }
 
 /// Back from [`text_offset`]: past the markers there (`after`, for a start) or before them.
-fn from_text_offset(doc: &Document, p: &Pos, after: bool) -> Pos {
+pub(crate) fn from_text_offset(doc: &Document, p: &Pos, after: bool) -> Pos {
     let text = anchor::para_text(doc, &p.path).unwrap_or("");
     let mut plain = 0usize;
     let mut off = text.len();
@@ -471,8 +483,34 @@ fn from_text_offset(doc: &Document, p: &Pos, after: bool) -> Pos {
     Pos { off, ..p.clone() }
 }
 
+/// A question asked on the client's copy, traced to the template.
+#[derive(Clone, Debug)]
+pub(crate) struct Traced {
+    /// The passage asked about.
+    pub main: (Pos, Pos),
+    /// Some of it is inside a loop's repetition (placed on the loop's body).
+    pub on_loop: bool,
+    /// The passages pointed at while speaking.
+    pub refs: Vec<(u32, Pos, Pos)>,
+    /// Asked at a caret, not a selection.
+    pub caret: bool,
+}
+
+/// The passage of a question (and what was pointed at) in the client's copy, in the template.
+fn trace(s: &Session, params: &Json) -> Option<Traced> {
+    let (a, b) = topic_cmds::reader_range(s, params).ok()?;
+    let (ta, tb, mut on_loop) = template_range(s, &a, &b)?;
+    let mut refs = vec![];
+    for (n, ra, rb) in topic_cmds::ref_ranges(s, params).ok()? {
+        let (x, y, l) = template_range(s, &ra, &rb)?;
+        on_loop |= l;
+        refs.push((n, x, y));
+    }
+    Some(Traced { main: (ta, tb), on_loop, refs, caret: topic_cmds::at_caret(s, params) })
+}
+
 /// The passage of a question being asked on the client's copy, in the template (once).
-pub(crate) fn take_preview_ask() -> Option<(Pos, Pos, bool)> {
+pub(crate) fn take_preview_ask() -> Option<Traced> {
     PREVIEW_ASK.with(|w| w.borrow_mut().take())
 }
 

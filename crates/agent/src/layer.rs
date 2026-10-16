@@ -68,6 +68,29 @@ pub enum QuestionStatus {
     /// An agent has taken it.
     Working,
     Answered,
+    /// Spoken, being transcribed: not with the agent yet (kept in memory only, never saved).
+    Transcribing,
+    /// The transcription failed: the reader can retry or dismiss it (memory only).
+    Failed,
+}
+
+impl QuestionStatus {
+    /// Not a question for the agent yet: a spoken one still turning into text.
+    pub fn is_draft(self) -> bool {
+        matches!(self, QuestionStatus::Transcribing | QuestionStatus::Failed)
+    }
+    /// With the agent: waiting or taken.
+    pub fn is_open(self) -> bool {
+        matches!(self, QuestionStatus::Pending | QuestionStatus::Working)
+    }
+}
+
+/// What the reader pointed at while speaking: marker `⟦n⟧` in the question's text, a place of
+/// the question's topic.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct QuestionRef {
+    pub n: u32,
+    pub place: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -107,6 +130,15 @@ pub struct Question {
     /// How many times it was sent (a redo sends it again).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub round: u32,
+    /// Passages pointed at while it was spoken.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refs: Vec<QuestionRef>,
+    /// Asked by voice.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub spoken: bool,
+    /// Why the transcription failed.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub error: String,
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -497,9 +529,11 @@ pub fn write_into(doc: &mut Document, layer: &Layer) {
     let roots: Vec<String> = text_lines(doc, CUSTOM_XML_ROOTS).into_iter().filter(|l| l.split('\t').nth(2).is_none_or(|p| !is_ours(p))).collect();
     let parts: Vec<String> = text_lines(doc, EMBEDDED_PARTS).into_iter().filter(|l| l.split('\t').nth(1).is_none_or(|p| !is_ours(p))).collect();
     let (mut roots, mut parts) = (roots, parts);
-    if !layer.is_empty() {
+    if !layer.is_empty() || layer.context.is_some() {
         let mut l = layer.clone();
         l.version = VERSION;
+        // Spoken questions still being transcribed live in memory only.
+        l.questions.retain(|q| !q.status.is_draft());
         let json = serde_json::to_string(&l).unwrap_or_default();
         // CDATA can't hold `]]>`; JSON only has it inside strings, where an escaped `]` means the same.
         let json = json.replace("]]>", "\\u005d\\u005d>");

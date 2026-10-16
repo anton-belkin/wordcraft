@@ -161,7 +161,7 @@ fn redo(s: &mut Session, op: &Op) {
                 if let Some(x) = l.questions.iter_mut().find(|x| x.id == q) {
                     x.hidden = false;
                     // Not answered yet: it goes to the agent again.
-                    if x.status != QuestionStatus::Answered {
+                    if x.status.is_open() {
                         x.status = QuestionStatus::Pending;
                         x.withdrawn = false;
                         x.round = x.round.saturating_add(1);

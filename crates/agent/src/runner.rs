@@ -28,7 +28,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use serde_json::{Value as Json, json};
 use wordcraft_engine::{CmdError, CmdResult, CommandSpec, Session, p};
 
-use crate::layer::{Actor, Layer, QuestionStatus};
+use crate::layer::{Actor, Layer};
 pub use crate::presence::Mode;
 use crate::presence::{self, store_mode};
 
@@ -269,7 +269,7 @@ fn seed(l: &Layer) -> String {
         let who = if e.actor == Actor::Agent { "agent" } else { "reader" };
         s.push_str(&format!("- {who} {}: {}\n", e.kind, short(&e.text, 200)));
     }
-    let open = l.questions.iter().filter(|q| q.status != QuestionStatus::Answered).count();
+    let open = l.questions.iter().filter(|q| q.status.is_open()).count();
     s.push_str(&format!("{open} question(s) are open. Call get_context before anything else.\n"));
     s
 }

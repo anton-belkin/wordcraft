@@ -15,6 +15,8 @@
 mod overlay;
 mod pane;
 mod ribbon;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod voice;
 
 pub use ribbon::request_menu;
 
@@ -36,7 +38,13 @@ static SERVER: OnceLock<String> = OnceLock::new();
 /// made: its command registry is built then).
 pub fn install() {
     wordcraft_agent::install();
-    wordcraft_ui_egui::ext::register(Box::new(AgentUi::default()));
+    // Once: a second registration would run every hook twice.
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        #[cfg(not(target_arch = "wasm32"))]
+        wordcraft_engine::ext::register_commands(voice::specs());
+        wordcraft_ui_egui::ext::register(Box::new(AgentUi::default()));
+    });
 }
 
 /// Tells the pane where the agent server listens (shown under Connect).
@@ -104,6 +112,8 @@ pub(crate) enum Act {
     SaveToSend(bool),
     /// Ask about a range: the Selection tab's question box, with the range chosen.
     AskAbout(Span),
+    /// Voice questions: the microphone, the model, Retry and Dismiss on a spoken question.
+    Voice(VoiceAct),
 }
 
 #[derive(Default)]
@@ -140,6 +150,17 @@ pub(crate) struct AgentUi {
     /// "Save a copy to send" includes the discussion.
     pub include_discussion: bool,
     pub acts: Vec<Act>,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub voice: voice::Voice,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum VoiceAct {
+    Toggle,
+    /// `off`, `small` or `turbo`.
+    Model(&'static str),
+    Retry(String),
+    Dismiss(String),
 }
 
 /// The agent layer's colours (not in the theme: they mean the same in light and dark).
@@ -151,6 +172,9 @@ pub(crate) struct Palette {
     pub private: Color32,
     pub agent: Color32,
     pub person: Color32,
+    /// A spoken question turning into text; one whose transcription failed.
+    pub transcribing: Color32,
+    pub failed: Color32,
 }
 
 pub(crate) fn palette(t: &Tokens) -> Palette {
@@ -162,7 +186,31 @@ pub(crate) fn palette(t: &Tokens) -> Palette {
         private: Color32::from_rgb(0xB0, 0x3A, 0x8C),
         agent: Color32::from_rgb(0x7B, 0x4F, 0xD6),
         person: t.accent,
+        transcribing: Color32::from_rgb(0x6B, 0x7C, 0x93),
+        failed: Color32::from_rgb(0xD9, 0x30, 0x25),
     }
+}
+
+/// A number in a filled circle (a passage pointed at while speaking), its top-left corner at `at`.
+pub(crate) fn voice_bubble(painter: &egui::Painter, at: egui::Pos2, n: u32, color: Color32) -> egui::Rect {
+    let galley = painter.layout_no_wrap(n.to_string(), wordcraft_ui_egui::theme::semibold(9.5), Color32::WHITE);
+    let w = (galley.size().x + 6.0).max(14.0);
+    let r = egui::Rect::from_min_size(at, egui::vec2(w, 14.0));
+    painter.rect_filled(r, 7.0, color);
+    painter.galley(r.center() - galley.size() / 2.0, galley, Color32::WHITE);
+    r
+}
+
+/// The span of a range in one paragraph (to its end when it runs on).
+pub(crate) fn range_span(s: &Session, a: &Pos, b: &Pos) -> Option<Span> {
+    if a.story != StoryRef::Body {
+        return None;
+    }
+    let paras = anchor::paragraphs(&s.doc);
+    let i = paras.iter().position(|p| *p == a.path)?;
+    let len = anchor::para_text(&s.doc, &a.path).map_or(0, str::len);
+    let end = if b.path == a.path { b.off.min(len) } else { len };
+    Some(Span { para: i, path: a.path.clone(), start: a.off.min(end), end })
 }
 
 pub(crate) fn kind_label(kind: &str) -> (&'static str, &'static str) {
@@ -348,6 +396,17 @@ impl AgentUi {
                     Err(e) => app.status(e),
                 },
                 Act::GoTo(sp) => go_to(app, &sp),
+                Act::Voice(v) => {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    match v {
+                        VoiceAct::Toggle => self.voice.toggle(app, ctx),
+                        VoiceAct::Model(id) => self.voice.choose(app, ctx, craft_voice::Model::from_id(id)),
+                        VoiceAct::Retry(q) => self.voice.retry(app, ctx, &q),
+                        VoiceAct::Dismiss(q) => self.voice.dismiss(app, &q),
+                    }
+                    #[cfg(target_arch = "wasm32")]
+                    let _ = v;
+                }
                 Act::AskAbout(sp) => {
                     self.open = true;
                     self.tab = Tab::Selection;
@@ -425,6 +484,11 @@ impl UiExtension for AgentUi {
             }
         }
         self.act(app, ctx);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.voice.frame(app, ctx);
+            voice::indicator(&self.voice, app, ctx);
+        }
         let ribbon_hidden = app.ui.ribbon_collapsed || app.session.view.focus_mode || app.session.view.read_mode;
         if app.has_document() && !app.ui.backstage && ribbon_hidden {
             self.launcher(app, ctx);
@@ -441,6 +505,8 @@ impl UiExtension for AgentUi {
 
     fn paint_pages(&mut self, app: &WordApp, ui: &Ui, painter: &egui::Painter, pages: &PageGeometry) {
         overlay::paint(self, app, ui, painter, pages);
+        #[cfg(not(target_arch = "wasm32"))]
+        voice::bubbles(&self.voice, app, painter, pages);
     }
 
     fn ribbon_tabs(&self) -> Vec<RibbonTab> {

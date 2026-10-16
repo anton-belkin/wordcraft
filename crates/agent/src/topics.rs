@@ -78,13 +78,18 @@ fn range_of(
     Some((sp.start_pos(), sp.end_pos()))
 }
 
-type Cache = Option<((u64, u64, u64), Arc<Vec<RTopic>>)>;
+type Cache = Option<((u64, u64, u64, u64), Arc<Vec<RTopic>>)>;
 static CACHE: Mutex<Cache> = Mutex::new(None);
 
 /// The visible topics in document order, numbered, with their places in order.
 pub fn resolve(s: &Session) -> Arc<Vec<RTopic>> {
     let l = crate::layer(s);
-    let key = (s.document_id(), s.rev(), l.revision);
+    let uid = crate::session_uid(s);
+    let key = (uid, s.document_id(), s.rev(), l.revision);
+    // A session that hasn't loaded its layer yet has no number: not cached.
+    if uid == 0 {
+        return Arc::new(compute(&s.doc, &l));
+    }
     if let Ok(g) = CACHE.lock()
         && let Some((k, v)) = g.as_ref()
         && *k == key
@@ -413,7 +418,12 @@ pub fn add_place(s: &mut Session, topic: &str, a: &Pos, b: &Pos, by: Actor, reas
     }
     let id = crate::update(s, |l| l.fresh_id("p"));
     let aid = format!("{id}a");
+    // The reader's selection stays on the same text (the markers shift offsets after them).
+    let (sa, sf) = (crate::text_offset(&s.doc, &s.sel.anchor), crate::text_offset(&s.doc, &s.sel.focus));
+    let forward = s.sel.anchor <= s.sel.focus;
     places::insert(&mut s.doc, &bookmark_name(&id), a, b)?;
+    let (na, nf) = (crate::from_text_offset(&s.doc, &sa, forward), crate::from_text_offset(&s.doc, &sf, !forward));
+    s.sel = wordcraft_engine::Selection { anchor: s.doc.clamp(&na), focus: s.doc.clamp(&nf) };
     // The text now starts after the start marker.
     let m = places::scan(&s.doc);
     let (fa, fb) = m.get(&bookmark_name(&id)).and_then(|v| v.first()).and_then(|o| Some((o.from()?, o.to()?))).ok_or("the bookmark didn't take")?;

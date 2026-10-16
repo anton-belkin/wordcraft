@@ -75,6 +75,55 @@ pub(crate) fn show(st: &mut AgentUi, app: &mut WordApp, ui: &mut Ui) {
     }
 }
 
+/// A question's text; a marker `⟦n⟧` (a passage pointed at while speaking) is a numbered bubble
+/// that selects that passage.
+fn spoken_text(app: &WordApp, ui: &mut Ui, l: &Layer, q: &wordcraft_agent::layer::Question, acts: &mut Vec<Act>) {
+    if q.refs.is_empty() {
+        if !q.text.is_empty() {
+            ui.label(&q.text);
+        }
+        return;
+    }
+    let p = palette(&Tokens::get(ui.ctx()));
+    let all = topics::resolve(&app.session);
+    let place = |id: &str| all.iter().flat_map(|t| t.places.iter()).find(|x| x.id == id).cloned();
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 3.0;
+        let mut rest = q.text.as_str();
+        loop {
+            let Some(i) = rest.find('⟦') else {
+                if !rest.trim().is_empty() {
+                    ui.label(rest.trim());
+                }
+                break;
+            };
+            let (before, after) = rest.split_at(i);
+            if !before.trim().is_empty() {
+                ui.label(before.trim());
+            }
+            let after = after.get('⟦'.len_utf8()..).unwrap_or("");
+            let Some(j) = after.find('⟧') else { break };
+            let n: u32 = after.get(..j).unwrap_or("").trim().parse().unwrap_or(0);
+            rest = after.get(j + '⟧'.len_utf8()..).unwrap_or("");
+            let pl = q.refs.iter().find(|r| r.n == n).and_then(|r| place(&r.place));
+            let (rect, resp) = ui.allocate_exact_size(vec2(16.0, 14.0), egui::Sense::click());
+            crate::voice_bubble(ui.painter(), rect.min, n, p.person);
+            let tip = pl.as_ref().map_or_else(
+                || "The text was deleted".to_string(),
+                |x| format!("Place {}: “{}”", x.label, clip(&topics::place_text(&app.session, x), 60)),
+            );
+            let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tip);
+            if resp.clicked()
+                && let Some(x) = pl
+                && let (Some(a), Some(b)) = (x.from, x.to)
+            {
+                acts.push(Act::GoToRange(a, b));
+            }
+        }
+    });
+    let _ = l;
+}
+
 /// A text with its links (current numbers, clickable).
 fn rich(ui: &mut Ui, app: &WordApp, text: &str, t: &Tokens, color: Color32, acts: &mut Vec<Act>) {
     let segs = links::render(&app.session, text);
@@ -319,10 +368,26 @@ fn topic_card(st: &mut AgentUi, app: &WordApp, ui: &mut Ui, l: &Layer, rt: &RTop
                             match q.status {
                                 QuestionStatus::Pending => chip(ui, "waiting for the agent", p.pending),
                                 QuestionStatus::Working => chip(ui, "the agent is on it", p.working),
+                                QuestionStatus::Transcribing => chip(ui, "transcribing what you said…", p.transcribing),
+                                QuestionStatus::Failed => chip(ui, "not transcribed", p.failed),
                                 QuestionStatus::Answered => {}
                             }
+                            if q.spoken {
+                                ui.label(RichText::new("· spoken").small().color(t.text_dim));
+                            }
                         });
-                        ui.label(&q.text);
+                        if q.status == QuestionStatus::Failed {
+                            ui.label(RichText::new(&q.error).small().color(p.failed));
+                            ui.horizontal(|ui| {
+                                if ui.small_button("Retry").on_hover_text("Transcribe the recording again").clicked() {
+                                    acts.push(Act::Voice(crate::VoiceAct::Retry(q.id.clone())));
+                                }
+                                if ui.small_button("Dismiss").on_hover_text("Drop this question and its recording").clicked() {
+                                    acts.push(Act::Voice(crate::VoiceAct::Dismiss(q.id.clone())));
+                                }
+                            });
+                        }
+                        spoken_text(app, ui, l, q, acts);
                         if let Some(a) = &q.answer {
                             ui.horizontal(|ui| {
                                 crate::sparkle(ui, p.agent, 11.0);
@@ -437,7 +502,7 @@ fn overview_tab(st: &mut AgentUi, app: &mut WordApp, ui: &mut Ui, l: &Layer, all
         let Some(topic) = l.topic(&rt.id) else { continue };
         let qs: Vec<_> = l.questions.iter().filter(|q| q.topic == rt.id && !q.hidden).collect();
         let unread = qs.iter().filter(|q| q.status == QuestionStatus::Answered && !q.seen).count();
-        let with_agent = qs.iter().any(|q| q.status != QuestionStatus::Answered);
+        let with_agent = qs.iter().any(|q| q.status.is_open());
         let pass = match st.filter.as_deref() {
             None => true,
             Some("unread") => unread > 0,

@@ -347,7 +347,7 @@ fn context(s: &mut Session, v: &Json) -> CmdResult {
         "privacyNote": "Text marked as client data reads as {{placeholder}} everywhere you look, and you can't write into it. Refer to it by its placeholder; never try to find the real value.",
         "template": if template { crate::crm::vocabulary() } else { Json::Null },
         "preview": if crate::render_state(s).is_some() { json!("the reader is looking at the template rendered for a client; you see and edit the template") } else { Json::Null },
-        "openQuestions": l.questions.iter().filter(|q| q.status != QuestionStatus::Answered).count(),
+        "openQuestions": l.questions.iter().filter(|q| q.status.is_open()).count(),
         "notes": l.notes.len(),
         "history": l.log.iter().rev().take(20).collect::<Vec<_>>(),
     });
@@ -405,22 +405,62 @@ fn question_json(s: &Session, view: &View, q: &Question) -> Json {
         {
             a.insert("text".into(), json!(crate::links::for_agent(s, &t)));
         }
+        m.remove("error");
+        if !q.refs.is_empty() {
+            // What the reader pointed at while speaking: in the text where they pointed, and listed.
+            let refs: Vec<Json> = q.refs.iter().map(|r| ref_json(s, view, r)).collect();
+            m.insert("spokenText".into(), json!(q.text));
+            m.insert("text".into(), json!(expand_refs(&q.text, &refs)));
+            m.insert("refs".into(), json!(refs));
+        }
     }
     o
+}
+
+/// A passage pointed at while speaking, as the agent may see it (masked), in the document the
+/// agent reads (the template while a client's copy is shown).
+fn ref_json(s: &Session, view: &View, r: &crate::layer::QuestionRef) -> Json {
+    let label = crate::topics::label(s, &r.place);
+    let doc = crate::agent_doc(s);
+    let occ = crate::places::scan(doc).get(&crate::layer::bookmark_name(&r.place)).and_then(|v| v.first().cloned());
+    let at = occ.and_then(|o| Some((o.from()?, o.to()?)));
+    let Some((a, b)) = at else { return json!({"n": r.n, "place": label, "paragraph": Json::Null, "deleted": true}) };
+    let para = view.paras.iter().position(|m| m.path == a.path);
+    let end = if b.path == a.path { b.off } else { usize::MAX };
+    let quote = para.and_then(|i| view.para(i)).map(|m| m.masked_slice(a.off, end.min(m.segs.last().map_or(0, |x| x.r.1)))).unwrap_or("").to_string();
+    json!({"n": r.n, "place": label, "paragraph": para, "quote": quote})
+}
+
+/// `⟦1⟧` → `⟦1: §12 “the quote”⟧`.
+pub(crate) fn expand_refs(text: &str, refs: &[Json]) -> String {
+    let mut out = text.to_string();
+    for r in refs {
+        let Some(n) = r.get("n").and_then(Json::as_u64) else { continue };
+        let what = if r.get("deleted").is_some() {
+            "deleted text".to_string()
+        } else {
+            let para = r.get("paragraph").and_then(Json::as_u64).map(|p| format!("§{p}")).unwrap_or_default();
+            let quote: String = r.get("quote").and_then(Json::as_str).unwrap_or("").chars().take(80).collect();
+            if quote.is_empty() { para } else { format!("{para} “{quote}”") }
+        };
+        out = out.replace(&format!("⟦{n}⟧"), &format!("⟦{n}: {what}⟧"));
+    }
+    out
 }
 
 fn status_matches(q: &Question, want: &str) -> bool {
     if want == "withdrawn" {
         return q.withdrawn;
     }
-    if q.hidden {
-        return false;
+    // A spoken question still being transcribed has no text yet: not the agent's.
+    if q.hidden || q.status.is_draft() {
+        return want == "drafts" && !q.hidden;
     }
     match want {
         "pending" => q.status == QuestionStatus::Pending,
         "working" => q.status == QuestionStatus::Working,
         "answered" => q.status == QuestionStatus::Answered,
-        "open" => q.status != QuestionStatus::Answered,
+        "open" => q.status.is_open(),
         _ => true,
     }
 }
@@ -429,7 +469,7 @@ fn status_matches(q: &Question, want: &str) -> bool {
 /// refused too (a WordCraft window holds one document).
 pub(crate) fn gate(v: &Json) -> Result<(), CmdError> {
     if is_agent(v) && crate::presence::mode() == crate::presence::Mode::Off {
-        return Err(CmdError::Disabled("the agent connection is off in WordCraft (Agent tab ▸ Connection ▸ Mode)".into()));
+        return Err(CmdError::Disabled("the agent connection is off in WordCraft (agent.agentMode)".into()));
     }
     Ok(())
 }

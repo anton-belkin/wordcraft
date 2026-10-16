@@ -21,7 +21,9 @@ renders it for a client themselves; you never see a client's values. A question 
 once with \"here\", don't investigate. TOPICS: every question belongs to a topic (numbered like footnotes, places 3.1, 3.2) with \
 a status (open, revise, agreed, info), notes and a discussion. Link inside the text ([§12](para:12), [3.2](place:3.2), [topic 3](topic:3)); \
 add places that a change here affects (add_places, with a reason); leave notes that will still matter after the chat (add_note with \
-topic); never mark Agreed: propose it (propose_agreed). A question with status withdrawn was taken back by the user: drop it.";
+topic); never mark Agreed: propose it (propose_agreed). A question with status withdrawn was taken back by the user: drop it. \
+VOICE: ⟦n⟧ in a question is what the user pointed at while speaking (expanded as ⟦n: §12 “quote”⟧, each a place of the topic), \
+see refs; resolve \"this\", \"that one\", \"это\" from those and the context.";
 
 /// Tools that take a `listener` (AItoCraft: a call carrying it keeps the conversation attached).
 const LISTENER_TOOLS: &[&str] = &["list_questions", "wait_for_questions", "claim_question", "answer_question"];
@@ -77,7 +79,7 @@ pub fn tools() -> Vec<Value> {
         ),
         tool(
             "list_questions",
-            "Questions the user asked on passages. status: pending (new), working (claimed), answered, open (pending+working) or all.",
+            "Questions the user asked on passages. status: pending (new), working (claimed), answered, open (pending+working) or all. A spoken question carries ⟦n: §12 “quote”⟧ where the user pointed at a passage while speaking; refs lists them.",
             json!({"status": {"type": "string", "enum": ["pending", "working", "answered", "open", "withdrawn", "all"]}}),
             &[],
             true,

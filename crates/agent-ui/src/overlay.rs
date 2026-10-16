@@ -31,7 +31,7 @@ pub(crate) fn marker_state(app: &WordApp, topic: &str, t: &Tokens) -> (Color32, 
     let qs = l.questions.iter().filter(|q| q.topic == topic && !q.hidden);
     let (mut working, mut unread) = (false, false);
     for q in qs {
-        working |= q.status == QuestionStatus::Working;
+        working |= matches!(q.status, QuestionStatus::Working | QuestionStatus::Transcribing);
         unread |= q.status == QuestionStatus::Answered && !q.seen;
     }
     (status_color(kind, &p, t), working, unread)

@@ -262,7 +262,101 @@ pub(crate) fn show(st: &mut AgentUi, app: &mut WordApp, ui: &mut Ui) {
     });
 
     group(ui, "Context", None, app, |ui, app| context_group(st, ui, app, &t, &mut acts));
+    // Voice: ask by speaking and pointing, and the speech model.
+    #[cfg(not(target_arch = "wasm32"))]
+    group(ui, "Voice", None, app, |ui, _app| voice_group(st, ui, &t, &mut acts));
     st.acts.extend(acts);
+}
+
+/// The Voice group: the microphone (status under it) and the model, off until the reader picks one.
+#[cfg(not(target_arch = "wasm32"))]
+fn voice_group(st: &AgentUi, ui: &mut Ui, t: &Tokens, acts: &mut Vec<Act>) {
+    use craft_voice::Model;
+
+    use crate::VoiceAct;
+    use crate::voice::{KEY, Status};
+    let red = Color32::from_rgb(0xD9, 0x30, 0x25);
+    let p = palette(t);
+    let v = &st.voice;
+    let (status, color, tip): (String, Color32, String) = match (v.meter(), v.status()) {
+        (Some((secs, _)), _) => (format!("{secs:.0}s"), red, "Listening. Click the words you mean; click again to send".into()),
+        (None, Status::Off) => ("Off".into(), t.text_dim, "Choose a speech model (right) to ask by voice".into()),
+        (None, Status::Downloading(done, total)) => {
+            let pct = if *total > 0 { *done as f64 * 100.0 / *total as f64 } else { 0.0 };
+            (format!("Downloading {pct:.0}%"), p.working, format!("Downloading the speech model ({} of {} MB)", done / 1_000_000, total / 1_000_000))
+        }
+        (None, Status::Loading) => ("Loading…".into(), p.working, "Loading the speech model".into()),
+        (None, Status::Failed(e)) => ("Model error".into(), red, format!("{e}. Choose the model again to retry")),
+        (None, Status::Idle | Status::Ready) => (
+            // Words, not "⌥": the interface font has no such glyph.
+            if cfg!(target_os = "macos") { "Hold Option".to_string() } else { "Hold Alt".to_string() },
+            t.text_dim,
+            format!("Hold {KEY}, speak, click the words you mean; release to send. Or click here to start and again to send"),
+        ),
+    };
+    let on = v.recording();
+    let resp = big(ui, "Ask by\nVoice", Some((&status, color)), on, true, &tip, |pa, r, ink| mic(pa, r, if on { red } else { ink }, on));
+    // Download progress as a bar under the status.
+    if let Status::Downloading(done, total) = v.status()
+        && *total > 0
+    {
+        let r = resp.rect;
+        let bar = Rect::from_min_size(pos2(r.left() + 6.0, r.bottom() - 3.0), vec2(r.width() - 12.0, 2.5));
+        ui.painter().rect_filled(bar, 1.0, t.border);
+        let k = (*done as f32 / *total as f32).clamp(0.0, 1.0);
+        ui.painter().rect_filled(Rect::from_min_size(bar.min, vec2(bar.width() * k, bar.height())), 1.0, p.working);
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+    }
+    if resp.clicked() {
+        acts.push(Act::Voice(if v.choice().is_some() || v.recording() { VoiceAct::Toggle } else { VoiceAct::Model("small") }));
+    }
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing = vec2(1.0, 0.0);
+        let here = |m: Model| craft_voice::default_dir().is_some_and(|d| m.is_ready(&d));
+        let size = |m: Model| if here(m) { String::new() } else { format!(" · {} MB", m.download_size() / 1_000_000) };
+        let mut choice = |label: String, on: bool, tip: &str, id: &'static str| {
+            if ui.radio(on, egui::RichText::new(label).size(11.5)).on_hover_text(tip).clicked() && !on {
+                acts.push(Act::Voice(VoiceAct::Model(id)));
+            }
+        };
+        choice("Off".into(), v.choice().is_none(), "No voice questions: nothing listens, nothing is downloaded", "off");
+        choice(
+            format!("Small{}", size(Model::Small)),
+            v.choice() == Some(Model::Small),
+            "Whisper small, 5-bit: fast (about 1–1.5 s for a 5-second question on an M1 Pro). Downloaded once, on this computer; audio never leaves it",
+            "small",
+        );
+        choice(
+            format!("Turbo, slower{}", size(Model::Turbo)),
+            v.choice() == Some(Model::Turbo),
+            "Whisper large-v3-turbo, 5-bit: more accurate with numbers and names, slower (about 2 s for a 5-second question on an M1 Pro). Downloaded once, on this computer; audio never leaves it",
+            "turbo",
+        );
+    });
+}
+
+/// A microphone, drawn (the icon set has none): capsule, cradle, stem and base; filled while
+/// recording.
+#[cfg(not(target_arch = "wasm32"))]
+fn mic(p: &egui::Painter, r: Rect, color: Color32, on: bool) {
+    let k = r.width() / 26.0;
+    let c = r.center();
+    let stroke = egui::Stroke::new(1.6, color);
+    let body = Rect::from_center_size(c + vec2(0.0, -4.0 * k), vec2(8.0 * k, 13.0 * k));
+    if on {
+        p.rect_filled(body, 4.0 * k, color);
+    } else {
+        p.rect_stroke(body, 4.0 * k, stroke, egui::StrokeKind::Middle);
+    }
+    let pts: Vec<egui::Pos2> = (0..=16)
+        .map(|i| {
+            let a = std::f32::consts::PI * (i as f32 / 16.0);
+            c + vec2(7.0 * k * a.cos(), k * (6.0 * a.sin()))
+        })
+        .collect();
+    p.add(egui::Shape::line(pts, stroke));
+    p.line_segment([c + vec2(0.0, 6.0 * k), c + vec2(0.0, 9.5 * k)], stroke);
+    p.line_segment([c + vec2(-4.0 * k, 9.5 * k), c + vec2(4.0 * k, 9.5 * k)], stroke);
 }
 
 static MENU_REQUEST: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);

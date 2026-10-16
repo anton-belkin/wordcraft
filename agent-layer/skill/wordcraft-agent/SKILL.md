@@ -46,6 +46,9 @@ A question with kind ping is a connection check: answer it at once with 'here', 
 
 ## For each question
 
+⟦n⟧ in a question is what the user pointed at while speaking, see `refs` (each is a place of the
+topic).
+
 1. `claim_question` at once: the passage shows the user you are on it.
 2. Investigate: `get_context` (once per session: outline, client-data placeholders, template
    vocabulary), `read_document` around the paragraph (questions carry `paragraph`, `quote` and

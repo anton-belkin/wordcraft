@@ -98,6 +98,20 @@ upstream. Each one accepted upstream removes its lines from the patch.
   `/events` or channel stream connected, a `wait_for_questions` poll in the last minute (its calls
   carry `waiting`, so HTTP and stdio count alike), the background agent running. Stream polls carry
   `poll`, so neither counts as the agent's last tool call.
+- **Voice questions** (`crates/agent-ui/src/voice.rs`, native only; the same as GridCraft's):
+  hold ⌥ (Alt) alone, or click **Ask by Voice** on the Agent tab, speak, and click or select the
+  passages you mean while speaking; release (or click again) and the question goes on at once. A
+  click points at the word under the caret (the paragraph between words), a selection at itself;
+  each passage pointed at becomes a place of the question's topic (TOPICS.md), and `⟦n⟧` marks in
+  the text where it was pointed at, placed by time (`craft_voice::splice`). The question is on the
+  document at once ("transcribing", not with the agent) and goes to the agent without preview or
+  confirmation when its text is there (`agent.spoken`); the agent reads `⟦1: §12 “quote”⟧` and
+  `refs`. A failed transcription is a flag with Retry and Dismiss (`agent.removeQuestion`). Local
+  Whisper through [craft-voice](https://github.com/anton-belkin/craft-voice) (a git dependency at
+  a fixed rev), model Off / Small / Turbo on the ribbon (an app setting, `voice.json`, downloaded
+  on first use). Audio stays in memory until its text is there and is never written. Releasing ⌥
+  after a question doesn't open keytips. `agent-layer/rebase.sh` puts back the yanked `zip 8.6.0`
+  that candle needs in an upstream lock.
 - **The Context group** (Agent tab; the same in GridCraft and DeckCraft, `context.rs`): what the
   agent knows. A large button shows the mode with the lamp's dot; its menu has **No context**
   ("Only this document. Runs in the background." [Document]), **Claude Cowork** ("Your Cowork chat,

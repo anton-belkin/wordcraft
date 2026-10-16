@@ -12,6 +12,7 @@
 //! - `{"exec": "curl -s …"}` runs a shell command while the window keeps running, prints its output;
 //! - `{"pane": "questions"}` / `{"pane": null}` opens or closes the Agent pane;
 //! - `{"menu": "context"}` / `{"menu": "ready"}` opens a menu of the Agent tab's Context group (`none` closes);
+//! - `{"voice": {"secs": 4, "pointed": ["quote", …]}}` shows a recording (no microphone);
 //! - `{"steps": 10}`, `{"shot": "/abs/out.png"}`.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -87,6 +88,7 @@ fn main() {
         );
     harness.input_mut().max_texture_side = Some(8192);
     step_n(&mut harness, 8);
+    let mut last_id = String::new();
     for l in lines.iter().skip(1) {
         if let Some(port) = l.get("serve").and_then(Value::as_u64) {
             let tx = tx.clone();
@@ -101,8 +103,13 @@ fn main() {
             // The AItoCraft registry, in the shots folder (not the user's).
             wordcraft_agent::registry::start(format!("http://127.0.0.1:{port}/mcp"), Some(std::path::PathBuf::from(&shots).join("registry")));
         } else if let Some(id) = l.get("cmd").and_then(Value::as_str) {
-            let params = l.get("params").cloned().unwrap_or(json!({}));
+            // `$last`: the id the previous command returned.
+            let raw = l.get("params").cloned().unwrap_or(json!({})).to_string().replace("\"$last\"", &json!(last_id).to_string());
+            let params: Value = serde_json::from_str(&raw).unwrap_or(json!({}));
             let r = harness.state_mut().run(id, params);
+            if let Some(x) = r.as_ref().ok().and_then(|v| v.get("id")).and_then(Value::as_str) {
+                last_id = x.to_string();
+            }
             harness.state_mut().canvas.scroll_to_caret = true;
             println!("{id}: {}", short(&format!("{r:?}")));
             step_n(&mut harness, 3);
@@ -131,6 +138,20 @@ fn main() {
                 Some(tab) => wordcraft_agent_ui::request_pane(true, tab),
                 None => wordcraft_agent_ui::request_pane(false, "ask"),
             }
+            step_n(&mut harness, 4);
+        } else if let Some(v) = l.get("voice") {
+            // A recording shown without a microphone: {"secs": 4.0, "pointed": ["quote", …]}.
+            let secs = v.get("secs").and_then(Value::as_f64).unwrap_or(3.0) as f32;
+            let pointed: Vec<String> = v
+                .get("pointed")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+                .unwrap_or_default();
+            let downloading = v.get("downloading").and_then(Value::as_array).and_then(|a| Some((a.first()?.as_u64()?, a.get(1)?.as_u64()?)));
+            wordcraft_agent_ui::voice::preview(wordcraft_agent_ui::voice::Preview {
+                recording: v.get("pointed").map(|_| (secs, pointed)),
+                downloading,
+            });
             step_n(&mut harness, 4);
         } else if let Some(m) = l.get("menu").and_then(Value::as_str) {
             wordcraft_agent_ui::request_menu(m);

@@ -771,3 +771,44 @@ fn a_project_folder_counts_only_once_chosen_here() {
     assert!(!Context { kind: Kind::Code, web: true, ..Default::default() }.web_on());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---------------------------------------------------------------- voice questions
+
+#[test]
+fn a_spoken_question_points_at_passages_and_reaches_the_agent_with_markers() {
+    let mut s = letter();
+    mark_secret(&mut s);
+    select(&mut s, "payable in advance");
+    // Put on the document at once, transcribing: a topic with a place per passage pointed at.
+    let r = s
+        .run(
+            "agent.ask",
+            &json!({"transcribing": true, "spoken": true, "refs": [{"n": 1, "paragraph": 2, "quote": "fixed"}, {"n": 2, "paragraph": 3, "quote": "31 December"}]}),
+        )
+        .unwrap();
+    let id = r["id"].as_str().unwrap().to_string();
+    let t = topics_of(&mut s);
+    assert_eq!(t["topics"][0]["places"].as_array().unwrap().len(), 3, "the selection and one place per ref: {t}");
+    // Not the agent's until it is text.
+    assert!(agent(&mut s, "agent.questions", json!({"status": "pending"})).unwrap().as_array().unwrap().is_empty());
+    s.run("agent.spoken", &json!({"id": id, "text": "Why is this ⟦1⟧ when the year ends ⟦2⟧?"})).unwrap();
+    let qs = agent(&mut s, "agent.questions", json!({"status": "pending"})).unwrap();
+    let q = &qs[0];
+    assert_eq!(q["spokenText"], "Why is this ⟦1⟧ when the year ends ⟦2⟧?");
+    assert_eq!(q["text"], "Why is this ⟦1: §2 “fixed”⟧ when the year ends ⟦2: §3 “31 December”⟧?", "{q}");
+    assert_eq!(q["refs"][1]["place"], "1.3");
+    assert!(!qs.to_string().contains(SECRET), "client data stays masked");
+    // A second one that never became text: Dismiss takes its new topic and bookmarks with it.
+    select(&mut s, "review of its annual accounts");
+    let r = s.run("agent.ask", &json!({"transcribing": true, "spoken": true, "newTopic": true})).unwrap();
+    let id2 = r["id"].as_str().unwrap().to_string();
+    s.run("agent.spoken", &json!({"id": id2, "error": "Nothing was heard"})).unwrap();
+    assert_eq!(topics_of(&mut s)["topics"].as_array().unwrap().len(), 2);
+    let before = crate::places::scan(&s.doc).len();
+    assert_eq!(s.run("agent.removeQuestion", &json!({"id": id2})).unwrap()["topicRemoved"], true);
+    assert_eq!(topics_of(&mut s)["topics"].as_array().unwrap().len(), 1);
+    assert_eq!(crate::places::scan(&s.doc).len(), before - 1);
+    // A question with the agent can't be dismissed this way; nor can the agent speak.
+    assert!(s.run("agent.removeQuestion", &json!({"id": id})).is_err());
+    assert!(agent(&mut s, "agent.spoken", json!({"id": id, "text": "x"})).is_err());
+}

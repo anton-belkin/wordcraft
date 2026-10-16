@@ -1,0 +1,19 @@
+{"start": "demo", "width": 1440, "height": 900}
+{"cmd": "ui.tab", "params": {"tab": "Agent"}}
+{"cmd": "agent.voiceModel", "params": {"model": "small"}}
+{"cmd": "select.text", "params": {"text": "payable within 30 days"}}
+{"cmd": "agent.ask", "params": {"transcribing": true, "spoken": true, "refs": [{"n": 1, "quote": "{{client.fee}}"}, {"n": 2, "quote": "three months"}]}}
+{"cmd": "agent.spoken", "params": {"id": "$last", "text": "Why is this ⟦1⟧ invoiced in advance when the notice here ⟦2⟧ is three months?"}}
+{"cmd": "select.text", "params": {"text": "payable within 30 days"}}
+{"pane": "selection"}
+{"steps": 6}
+{"shot": "SHOTS/v2-spoken-question.png"}
+{"cmd": "select.text", "params": {"text": "We do not audit"}}
+{"cmd": "agent.ask", "params": {"transcribing": true, "spoken": true, "newTopic": true}}
+{"cmd": "agent.spoken", "params": {"id": "$last", "error": "Nothing was heard"}}
+{"steps": 6}
+{"shot": "SHOTS/v3-failed.png"}
+{"cmd": "select.text", "params": {"text": "ten years"}}
+{"voice": {"secs": 4.0, "pointed": ["{{client.fee}}", "three months"]}}
+{"steps": 6}
+{"shot": "SHOTS/v1-recording.png"}
