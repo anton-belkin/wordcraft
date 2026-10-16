@@ -110,15 +110,22 @@ fn sparkle(p: &egui::Painter, r: Rect, color: Color32) {
 pub(crate) fn status(app: &WordApp, t: &Tokens) -> (String, Color32) {
     let p = palette(t);
     let l = wordcraft_agent::layer(&app.session);
-    let ready = l.questions.iter().filter(|q| q.status == QuestionStatus::Answered && !q.seen).count();
-    let working = l.questions.iter().filter(|q| q.status == QuestionStatus::Working).count();
-    let waiting = l.questions.iter().filter(|q| q.status == QuestionStatus::Pending).count();
+    let live = || l.questions.iter().filter(|q| !q.hidden);
+    let ready = live().filter(|q| q.status == QuestionStatus::Answered && !q.seen).count();
+    let working = live().filter(|q| q.status == QuestionStatus::Working).count();
+    let waiting = live().filter(|q| q.status == QuestionStatus::Pending).count();
+    let so = wordcraft_agent::topic_cmds::sign_off(&app.session);
+    let decided = so["agreed"].as_u64().unwrap_or(0);
+    let total = decided + so["revise"].as_u64().unwrap_or(0) + so["open"].as_u64().unwrap_or(0);
     if ready > 0 {
         (format!("{ready} ready"), p.answered)
     } else if working > 0 {
         (format!("{working} in work"), p.working)
     } else if waiting > 0 {
         (format!("{waiting} waiting"), p.pending)
+    } else if total > 0 {
+        // Readiness for sign-off.
+        (format!("{decided}/{total} agreed"), if decided == total { p.answered } else { t.text_dim })
     } else {
         ("idle".into(), t.text_disabled)
     }
@@ -131,7 +138,7 @@ pub(crate) fn show(st: &mut AgentUi, app: &mut WordApp, ui: &mut Ui) {
     let open = st.open;
     let mut acts: Vec<Act> = Vec::new();
 
-    group(ui, "Agent", None, app, |ui, _app| {
+    group(ui, "Agent", None, app, |ui, app| {
         let r = big(
             ui,
             "Agent",
@@ -145,9 +152,29 @@ pub(crate) fn show(st: &mut AgentUi, app: &mut WordApp, ui: &mut Ui) {
             if open {
                 st.open = false;
             } else {
-                acts.push(Act::Open(Tab::Questions, None));
+                acts.push(Act::Open(Tab::Selection, None));
             }
         }
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing = vec2(1.0, 0.0);
+            let so = wordcraft_agent::topic_cmds::sign_off(&app.session);
+            let line = so["line"].as_str().unwrap_or("").to_string();
+            if small(ui, "pin", "Overview", true, &line).clicked() {
+                acts.push(Act::Open(Tab::Overview, None));
+            }
+            if small(
+                ui,
+                "share",
+                "Save copy to send…",
+                app.has_document(),
+                "A copy of the document with its places, statuses and notes; the discussion stays here unless included",
+            )
+            .clicked()
+            {
+                acts.push(Act::SaveToSend(st.include_discussion));
+            }
+            ui.checkbox(&mut st.include_discussion, egui::RichText::new("include discussion").size(11.0));
+        });
     });
 
     group(ui, "Client data", None, app, |ui, app| {

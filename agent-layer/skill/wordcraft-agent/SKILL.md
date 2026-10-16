@@ -62,6 +62,18 @@ A question with kind ping is a connection check: answer it at once with 'here', 
   proven), `source` (where a figure or rule comes from: link + summary) or `faq` (a prepared answer
   to a likely question). Anchor each with `paragraph` and the exact `quote`.
 
+## Topics
+
+Every question belongs to a **topic**: its places in the document (numbered like footnotes:
+topic 3, places 3.1, 3.2), a status (open, revise, agreed, info) with a sentence, notes, and the
+discussion. `list_topics` and `get_topic` show them; questions carry their topic.
+
+- **Link inside the text**, never a list below it: `[§12](para:12)`, `[the fee clause](quote:12/payable within 30 days)`, `[3.2](place:3.2)`, `[topic 3](topic:3)`, `[the source](note:<id>)`, `[NOAA](https://…)`. A plain `§12` links itself. Links follow the document as it is edited.
+- **Add places that a change here affects** (`add_places`, each with a short reason), and widen a place to what the answer is really about (`widen_place`: the whole clause).
+- **Leave notes that will still matter after the chat** (`add_note` with `topic`: explanation, source with url and summary, assumption, decision). The discussion is not sent with the document; the status and the notes are.
+- **Never mark Agreed: propose it** (`propose_agreed` with your reasons); you may set open, revise or info with `set_status`.
+- A question with status `withdrawn` was taken back by the person (undo): drop it.
+
 ## Privacy — non-negotiable
 
 Client data reads as `{{placeholder}}` everywhere (`get_context.clientData`). So:

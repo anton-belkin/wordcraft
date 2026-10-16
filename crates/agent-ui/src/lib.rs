@@ -1,10 +1,10 @@
 //! The agent layer's UI (a WordCraft fork feature), plugged in through `wordcraft_ui_egui::ext`:
 //!
-//! - on the page: questions underlined in their status colour with a badge in the margin
-//!   (waiting / the agent is on it / answer ready), the agent's notes as margin cards with a hover
-//!   card, client data shaded and tagged with its placeholder;
-//! - the Agent pane: ask about the selection, read answers and notes with their sources, mark
-//!   client data, pick a client to render a template, the history, how to connect an agent;
+//! - on the page (`overlay.rs`): a tiny numbered circle in the margin for each place of a topic
+//!   (3, 3.1…), coloured by its status, and client data shaded with its placeholder;
+//! - the Agent pane (`pane.rs`): Selection (what is selected and the topics touching it: status,
+//!   places, notes, the discussion; the question box at the bottom), Overview (every topic, the
+//!   sign-off line), History;
 //! - the Agent tab on the ribbon (`ribbon.rs`): the pane with what is waiting, client data and the
 //!   template's client, the connection (server, agent, Claude Code command, Connect Cowork);
 //! - context-menu items: Ask the Agent, Mark as Client Data;
@@ -61,8 +61,8 @@ pub(crate) fn server_url() -> Option<&'static str> {
 
 static REQUEST: Mutex<Option<(bool, String)>> = Mutex::new(None);
 
-/// Opens (or closes) the Agent pane on a tab (`ask`, `questions`, `notes`, `client`, `history`,
-/// `connect`) from the next frame (for scripts and snapshots).
+/// Opens (or closes) the Agent pane on a tab (`selection`, `overview`, `history`) from the next
+/// frame (for scripts and snapshots).
 pub fn request_pane(open: bool, tab: &str) {
     if let Ok(mut r) = REQUEST.lock() {
         *r = Some((open, tab.to_string()));
@@ -72,19 +72,17 @@ pub fn request_pane(open: bool, tab: &str) {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Tab {
     #[default]
-    Ask,
-    Questions,
-    Notes,
+    Selection,
+    Overview,
     History,
 }
 
 impl Tab {
     fn parse(s: &str) -> Tab {
         match s {
-            "questions" => Tab::Questions,
-            "notes" => Tab::Notes,
+            "overview" | "questions" | "notes" => Tab::Overview,
             "history" => Tab::History,
-            _ => Tab::Ask,
+            _ => Tab::Selection,
         }
     }
 }
@@ -95,10 +93,15 @@ pub(crate) enum Act {
     /// A line in the status bar.
     Status(String),
     Open(Tab, Option<String>),
-    Follow(String),
     Run(&'static str, Json),
     GoTo(Span),
-    /// Ask about a range: the pane's Ask tab with the range chosen.
+    /// Select a range (a place over several paragraphs) and scroll to it.
+    GoToRange(Pos, Pos),
+    /// A link inside a text.
+    Link(wordcraft_agent::links::Target),
+    /// "Save a copy to send", with or without the discussion.
+    SaveToSend(bool),
+    /// Ask about a range: the Selection tab's question box, with the range chosen.
     AskAbout(Span),
 }
 
@@ -115,6 +118,18 @@ pub(crate) struct AgentUi {
     pub highlight: Option<String>,
     /// A label typed for the next client-data mark.
     pub label: String,
+    /// The topic open in the pane (its places outlined on the page).
+    pub open_topic: Option<String>,
+    /// A note to show expanded.
+    pub open_note: Option<String>,
+    /// The next question starts a topic of its own.
+    pub new_topic: bool,
+    /// Overview filter.
+    pub filter: Option<String>,
+    /// Status text being edited, per topic.
+    pub status_draft: std::collections::HashMap<String, String>,
+    /// "Save a copy to send" includes the discussion.
+    pub include_discussion: bool,
     pub acts: Vec<Act>,
 }
 
@@ -123,7 +138,6 @@ pub(crate) struct Palette {
     pub pending: Color32,
     pub working: Color32,
     pub answered: Color32,
-    pub seen: Color32,
     pub note: Color32,
     pub private: Color32,
     pub agent: Color32,
@@ -135,29 +149,10 @@ pub(crate) fn palette(t: &Tokens) -> Palette {
         pending: Color32::from_rgb(0xD9, 0x7A, 0x00),
         working: Color32::from_rgb(0x1F, 0x6F, 0xD1),
         answered: Color32::from_rgb(0x1E, 0x9E, 0x5A),
-        seen: t.text_disabled,
         note: Color32::from_rgb(0x7B, 0x4F, 0xD6),
         private: Color32::from_rgb(0xB0, 0x3A, 0x8C),
         agent: Color32::from_rgb(0x7B, 0x4F, 0xD6),
         person: t.accent,
-    }
-}
-
-pub(crate) fn status_text(q: &wordcraft_agent::layer::Question) -> (&'static str, &'static str) {
-    match q.status {
-        QuestionStatus::Pending => ("○", "Waiting for the agent"),
-        QuestionStatus::Working => ("●", "The agent is on it…"),
-        QuestionStatus::Answered if !q.seen => ("●", "Answer ready"),
-        QuestionStatus::Answered => ("○", "Answered"),
-    }
-}
-
-pub(crate) fn status_color(q: &wordcraft_agent::layer::Question, p: &Palette) -> Color32 {
-    match q.status {
-        QuestionStatus::Pending => p.pending,
-        QuestionStatus::Working => p.working,
-        QuestionStatus::Answered if !q.seen => p.answered,
-        QuestionStatus::Answered => p.seen,
     }
 }
 
@@ -191,6 +186,20 @@ pub(crate) fn sparkle(ui: &mut Ui, color: Color32, size: f32) {
         c + egui::vec2(-i, -i),
     ];
     ui.painter().add(egui::Shape::convex_polygon(pts, color, egui::Stroke::NONE));
+}
+
+/// Where "Save a copy to send" writes: beside the document, else in the home folder.
+fn send_path(s: &Session) -> std::path::PathBuf {
+    let title = wordcraft_agent::document_title(s);
+    let stem = std::path::Path::new(&title).file_stem().map(|x| x.to_string_lossy().into_owned()).unwrap_or(title);
+    let dir = s
+        .path
+        .as_ref()
+        .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
+        .filter(|d| !d.as_os_str().is_empty())
+        .or_else(|| std::env::var_os("HOME").map(std::path::PathBuf::from))
+        .unwrap_or_else(std::env::temp_dir);
+    dir.join(format!("{stem} (to send).docx"))
 }
 
 /// "3 min ago".
@@ -258,23 +267,6 @@ pub(crate) fn go_to(app: &mut WordApp, sp: &Span) {
     app.canvas.scroll_to_caret = true;
 }
 
-/// Follows a link: `para:12` goes to the paragraph, `note:n3` shows the note, a URL opens.
-pub(crate) fn follow(st: &mut AgentUi, app: &mut WordApp, ctx: &egui::Context, href: &str) {
-    if let Some(n) = href.strip_prefix("para:").and_then(|n| n.trim().parse::<usize>().ok()) {
-        let paras = anchor::paragraphs(&app.session.doc);
-        if let Some(path) = paras.get(n) {
-            let len = anchor::para_text(&app.session.doc, path).map_or(0, str::len);
-            go_to(app, &Span { para: n, path: path.clone(), start: 0, end: len });
-        }
-    } else if let Some(id) = href.strip_prefix("note:") {
-        st.open = true;
-        st.tab = Tab::Notes;
-        st.highlight = Some(id.to_string());
-    } else if href.starts_with("https://") || href.starts_with("http://") {
-        ctx.open_url(egui::OpenUrl::new_tab(href));
-    }
-}
-
 impl AgentUi {
     fn act(&mut self, app: &mut WordApp, ctx: &egui::Context) {
         for a in std::mem::take(&mut self.acts) {
@@ -283,18 +275,57 @@ impl AgentUi {
                     self.open = true;
                     self.tab = tab;
                     if let Some(id) = id {
-                        // Opening an answer marks it read.
-                        let unseen = wordcraft_agent::layer(&app.session)
-                            .questions
-                            .iter()
-                            .any(|q| q.id == id && q.status == QuestionStatus::Answered && !q.seen);
-                        if unseen {
-                            let _ = app.run("agent.seen", json!({"id": id}));
+                        let is_topic = wordcraft_agent::layer(&app.session).topic(&id).is_some();
+                        if is_topic {
+                            self.open_topic = Some(id.clone());
                         }
                         self.highlight = Some(id);
                     }
                 }
-                Act::Follow(href) => follow(self, app, ctx, &href),
+                Act::SaveToSend(include) => {
+                    let path = send_path(&app.session);
+                    match app.run("agent.saveForSending", json!({"path": path.to_string_lossy(), "includeDiscussion": include})) {
+                        Ok(_) => {
+                            app.status(format!("Saved a copy to send: {}{}", path.display(), if include { " (with the discussion)" } else { "" }))
+                        }
+                        Err(e) => app.status(e),
+                    }
+                }
+                Act::GoToRange(a, b) => {
+                    app.session.sel = Selection { anchor: app.session.doc.clamp(&a), focus: app.session.doc.clamp(&b) };
+                    app.canvas.scroll_to_caret = true;
+                }
+                Act::Link(target) => {
+                    use wordcraft_agent::links::Target;
+                    match target {
+                        Target::Passage(sp) => go_to(app, &sp),
+                        Target::Place { topic, place } => {
+                            let all = wordcraft_agent::topics::resolve(&app.session);
+                            if let Some((Some(a), Some(b))) =
+                                all.iter().flat_map(|t| t.places.iter()).find(|p| p.id == place).map(|p| (p.from.clone(), p.to.clone()))
+                            {
+                                app.session.sel = Selection { anchor: a, focus: b };
+                                app.canvas.scroll_to_caret = true;
+                            }
+                            self.open = true;
+                            self.tab = Tab::Selection;
+                            self.open_topic = Some(topic);
+                        }
+                        Target::Topic(t) => {
+                            self.open = true;
+                            self.tab = Tab::Selection;
+                            self.open_topic = Some(t);
+                        }
+                        Target::Note { topic, note } => {
+                            self.open = true;
+                            self.tab = Tab::Selection;
+                            self.open_topic = Some(topic);
+                            self.open_note = Some(note);
+                        }
+                        Target::Url(u) => ctx.open_url(egui::OpenUrl::new_tab(u)),
+                        Target::Gone => {}
+                    }
+                }
                 Act::Status(s) => app.status(s),
                 Act::Run(id, params) => {
                     if let Err(e) = app.run(id, params) {
@@ -304,7 +335,7 @@ impl AgentUi {
                 Act::GoTo(sp) => go_to(app, &sp),
                 Act::AskAbout(sp) => {
                     self.open = true;
-                    self.tab = Tab::Ask;
+                    self.tab = Tab::Selection;
                     self.ask_span = Some(sp);
                     self.focus_draft = true;
                 }
@@ -345,7 +376,7 @@ impl AgentUi {
                     .min_size(egui::vec2(0.0, 28.0))
                     .wrap_mode(egui::TextWrapMode::Extend);
                 if ui.add(b).on_hover_text("Questions, answers and notes of your agent").clicked() {
-                    let tab = if ready + working + waiting > 0 { Tab::Questions } else { Tab::Ask };
+                    let tab = if ready + working + waiting > 0 { Tab::Overview } else { Tab::Selection };
                     self.acts.push(Act::Open(tab, None));
                 }
             },
@@ -369,7 +400,11 @@ impl UiExtension for AgentUi {
         }
         if let Some((open, tab)) = REQUEST.lock().ok().and_then(|mut r| r.take()) {
             self.open = open;
-            self.tab = Tab::parse(&tab);
+            self.tab = Tab::parse(tab.split(':').next().unwrap_or(""));
+            // `selection:3`: topic 3 open.
+            if let Some(n) = tab.split_once(':').map(|(_, n)| n) {
+                self.open_topic = wordcraft_agent::topics::find(&app.session, n);
+            }
         }
         self.act(app, ctx);
         let ribbon_hidden = app.ui.ribbon_collapsed || app.session.view.focus_mode || app.session.view.read_mode;

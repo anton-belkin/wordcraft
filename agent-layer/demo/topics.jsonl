@@ -1,0 +1,39 @@
+{"start": "demo", "width": 1440, "height": 900}
+{"cmd": "select.text", "params": {"text": "payable within 30 days"}}
+{"cmd": "agent.ask", "params": {"text": "Is 30 days standard for this kind of engagement?"}}
+{"cmd": "agent.claim", "params": {"id": "q3", "actor": "agent"}}
+{"cmd": "agent.answer", "params": {"id": "q3", "actor": "agent", "text": "Yes: 30 days is the usual term for engagements invoiced in advance (§13). The notice period in [the term clause](quote:20/three months) is consistent with it."}}
+{"cmd": "agent.note", "params": {"topic": 1, "actor": "agent", "kind": "source", "title": "EU Late Payment Directive", "text": "Business-to-business payment terms: 60 days at most unless agreed otherwise; 30 days is the default.", "url": "https://eur-lex.europa.eu/eli/dir/2011/7/oj", "summary": "Directive 2011/7/EU on late payment"}}
+{"cmd": "agent.addPlaces", "params": {"topic": 1, "actor": "agent", "places": [{"paragraph": 20, "quote": "Fees for work already done remain due", "reason": "a shorter payment term changes what is due at termination"}]}}
+{"cmd": "agent.topicStatus", "params": {"topic": 1, "actor": "agent", "status": "revise", "text": "align the payment term with §13 and 1.2"}}
+{"cmd": "agent.proposeAgreed", "params": {"topic": 1, "actor": "agent", "reasons": "the partner confirmed 30 days on 14.10; nothing else depends on it"}}
+{"cmd": "select.text", "params": {"text": "We do not audit the financial statements"}}
+{"cmd": "agent.ask", "params": {"text": "Is this enough to exclude an assurance engagement?"}}
+{"cmd": "agent.claim", "params": {"id": "q11", "actor": "agent"}}
+{"cmd": "agent.answer", "params": {"id": "q11", "actor": "agent", "text": "Yes, stated plainly; see §6."}}
+{"cmd": "agent.setStatus", "params": {"topic": 1, "status": "agreed", "text": "with the CFO on 14.10"}}
+{"cmd": "select.text", "params": {"text": "ten years"}}
+{"cmd": "agent.ask", "params": {"text": "Why ten years?"}}
+{"cmd": "select.text", "params": {"text": "Questions are answered within three business days"}}
+{"cmd": "agent.ask", "params": {"text": "Can we promise two days?"}}
+{"cmd": "select.text", "params": {"text": "the beneficial ownership register"}}
+{"cmd": "agent.ask", "params": {"text": "Which register exactly?"}}
+{"cmd": "agent.claim", "params": {"id": "q21", "actor": "agent"}}
+{"cmd": "select.text", "params": {"text": "ten years"}}
+{"cmd": "text.delete", "params": {}}
+{"cmd": "caret.docStart", "params": {}}
+{"steps": 4}
+{"shot": "SHOTS/t1-markers.png"}
+{"pane": "selection:2"}
+{"cmd": "select.text", "params": {"text": "payable within 30 days"}}
+{"steps": 6}
+{"shot": "SHOTS/t2-selection-card.png"}
+{"pane": "overview"}
+{"steps": 4}
+{"shot": "SHOTS/t3-overview.png"}
+{"pane": "selection:5"}
+{"cmd": "select.text", "params": {"text": "Data the client provides is kept for"}}
+{"steps": 6}
+{"shot": "SHOTS/t4-removed-place.png"}
+{"pane": "history"}
+{"shot": "SHOTS/t5-history.png"}

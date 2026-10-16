@@ -92,6 +92,25 @@ upstream. Each one accepted upstream removes its lines from the patch.
   last minute (its calls carry `waiting`, so HTTP and stdio count alike), the background agent
   running: "Listener connected · not checked". Else "Nobody is listening". Stream polls carry
   `poll`, so neither counts as the agent's last tool call.
+- **Topics** (`~/aitocraft/TOPICS.md`, layer format v2; v1 files migrate on load). A topic is one
+  question or theme: places (bookmarks `_GcPlace_<id>` in the document, with a quote anchor to fall
+  back on), a status (Open, Revise, Agreed, For information) with text, who and when, notes, and the
+  discussion. Numbered like footnotes by the first place (3, places 3.1, 3.2). Only a person sets
+  Agreed; the agent proposes it. Copy and paste duplicates a place into the same topic (the
+  selection over a whole place takes its bookmark along, as in Word), cut and paste moves it,
+  deleting its text leaves a collapsed bookmark and the text ("removed here: “…”"). Links inside
+  texts (`[§12](para:12)`, `quote:`, `place:`, `topic:`, `note:`, plain `§12`) are stored as anchors
+  and shown with current numbers (`links.rs`). The page shows only tiny numbered circles in the
+  margin, coloured by status (blue and pulsing while the agent works, a dot for an unread answer);
+  the pane has Selection (the question box at the bottom), Overview (the sign-off line) and History.
+  "Save copy to send" (Agent tab) drops the discussion unless "include discussion" is ticked.
+  **Undo** (`undo.rs`): WordCraft's undo restores whole snapshots, so every person action on the
+  layer (ask, status, pin, remove a note, reject a place, add a place, client data) is a changing
+  command whose change is its bookmarks plus a step counter in an unsaved passthrough key; ⌘Z
+  brings the counter back and the layer applies the step's inverse (an undone question disappears,
+  or is withdrawn if the agent had it; redo sends it again; an answered one comes back answered).
+  The agent's contributions are never steps: when an undo restores a snapshot without the agent's
+  bookmarks, the layer puts them back from their last known position. No engine change.
 - **AItoCraft** (`~/aitocraft/PROTOCOL.md`): one MCP hub, configured once in Claude Desktop /
   Cowork and Claude Code, serves every open document of every Craft app; the user picks the
   context by starting the conversation where the work belongs ("we're working on contract.docx").
