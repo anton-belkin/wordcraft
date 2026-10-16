@@ -15,7 +15,7 @@ before changing anything outside the agent crates.
 
 | Path | What | Upstream? |
 | --- | --- | --- |
-| `crates/agent/` (`wordcraft-agent`, L5) | The layer: data model and storage in the `.docx`, quote anchors, the privacy mask, templates and the CRM fixture, `agent.*` commands, the observer (save, history, template preview), the in-app MCP server | fork only |
+| `crates/agent/` (`wordcraft-agent`, L5) | The layer: data model and storage in the `.docx`, quote anchors, the privacy mask, templates and the CRM fixture, `agent.*` commands, the observer (save, history, template preview), the in-app MCP server, and `wordcraft-agent-mcp` (the same over stdio) | fork only |
 | `crates/agent-ui/` (`wordcraft-agent-ui`, L6) | The Agent pane, badges and margin notes on the page, client-data marks, the client picker, the launcher, context-menu items; `examples/agent_demo.rs` renders the window offscreen with the real MCP server | fork only |
 | `apps/wordcraft/src/agent.rs` | Starts the layer in the desktop app (`--agent-port`, `--no-agent`, `--agent-demo`) | fork only |
 | `agent-layer/` | The agent's skill, the end-to-end demo script, the rebase script | fork only |
@@ -91,7 +91,21 @@ opens the engagement-letter template. Connect Claude Code:
 claude mcp add --transport http wordcraft http://127.0.0.1:7982/mcp
 ```
 
-and give it the skill in `agent-layer/skill/`. Offscreen, with the real server and `curl` as the
+and give it the skill in `agent-layer/skill/`.
+
+**Claude Desktop / Cowork (stdio).** Clients that start local MCP servers as processes use
+`wordcraft-agent-mcp` (`crates/agent/src/bin`), the same tools over stdio, reaching the app through
+its control channel (the key file in the settings folder; it connects on first use, so it can start
+before WordCraft):
+
+```bash
+cargo build --release -p wordcraft-agent
+```
+
+then add the entry from `agent-layer/claude_desktop_config.example.json` to
+`~/Library/Application Support/Claude/claude_desktop_config.json` and restart Claude Desktop. There
+is no event stream over stdio: the agent listens with `wait_for_questions` in a loop (each call
+waits up to 50 s), or a scheduled task checks `list_questions` every few minutes. Offscreen, with the real server and `curl` as the
 agent (works with a locked screen):
 
 ```bash

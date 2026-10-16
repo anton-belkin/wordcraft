@@ -28,6 +28,8 @@ pub mod mcp;
 pub mod sample;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod server;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod stdio;
 pub mod template;
 
 use std::sync::Arc;
