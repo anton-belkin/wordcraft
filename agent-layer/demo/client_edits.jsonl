@@ -1,0 +1,19 @@
+{"start": "demo", "width": 1440, "height": 900}
+{"cmd": "ui.tab", "params": {"tab": "Agent"}}
+{"cmd": "agent.render", "params": {"client": "CL-2Q8D4R7T"}}
+{"cmd": "select.text", "params": {"text": "on the basis of"}}
+{"cmd": "text.insert", "params": {"text": "on the strength of"}}
+{"cmd": "select.text", "params": {"text": "Shipping"}}
+{"cmd": "text.insert", "params": {"text": "Shipyard"}}
+{"cmd": "caret.docStart", "params": {}}
+{"steps": 6}
+{"shot": "SHOTS/d1-copy-edit-and-crm-refused.png"}
+{"cmd": "agent.exec", "params": {"actor": "agent", "command": "text.insert", "params": {"text": "records"}, "at": {"quote": "documents the client provides"}, "reason": "precise"}}
+{"steps": 6}
+{"shot": "SHOTS/d2-conflict.png"}
+{"cmd": "agent.render", "params": {"client": "file"}}
+{"cmd": "select.text", "params": {"text": "[name]"}}
+{"cmd": "text.insert", "params": {"text": "Acme Ltd"}}
+{"cmd": "caret.docStart", "params": {}}
+{"steps": 6}
+{"shot": "SHOTS/d3-file-data.png"}

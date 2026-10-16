@@ -232,10 +232,12 @@ fn templates_render_per_client_and_the_agent_sees_the_template() {
     )
     .unwrap();
     assert!(body(&s).contains("GBP 9,750 monthly"), "{}", body(&s));
-    // Another client: re-rendered at once; the reader can't type into the preview.
+    // Another client: re-rendered at once; the reader can't change its CRM values.
     s.run("agent.render", &json!({"client": "CL-7F3K9M2Q"})).unwrap();
     assert!(body(&s).contains("Alpenglow Robotics AG") && body(&s).contains("named partner"));
-    assert!(s.run("text.insert", &json!({"text": "x"})).is_err());
+    select(&mut s, "Robotics");
+    s.run("text.insert", &json!({"text": "x"})).unwrap();
+    assert!(body(&s).contains("Alpenglow Robotics AG: the review"), "a value from the CRM is read only");
     // Saving saves the template.
     let dir = std::env::temp_dir().join(format!("wordcraft-agent-tpl-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -954,4 +956,104 @@ fn replacing_a_whole_bookmarked_paragraph_keeps_the_place_over_the_new_text() {
     let ts = topics_of(&mut s);
     assert_eq!(ts["topics"].as_array().unwrap().iter().find(|x| x["id"] == t2.as_str()).unwrap()["places"][0]["quote"], "1 July");
     let _ = t;
+}
+
+// ---------------------------------------------------------------- D: the client's copy is editable
+
+fn demo() -> Session {
+    crate::install();
+    let mut s = Session::new(Document::new());
+    s.author = "Reviewer".into();
+    s.run("agent.openDemo", &json!({})).unwrap();
+    s
+}
+
+fn template_text(s: &mut Session) -> String {
+    agent(s, "agent.read", json!({})).unwrap().to_string()
+}
+
+#[test]
+fn an_edit_in_a_clients_copy_stays_in_that_copy_and_survives_rerendering() {
+    let mut s = demo();
+    s.run("agent.render", &json!({"client": "CL-2Q8D4R7T"})).unwrap();
+    select(&mut s, "on the basis of");
+    s.run("text.insert", &json!({"text": "on the strength of"})).unwrap();
+    assert!(body(&s).contains("The work is done on the strength of the documents"), "{}", body(&s));
+    // Not in the template, nor in another client's copy.
+    assert!(!template_text(&mut s).contains("strength"));
+    s.run("agent.render", &json!({"client": "CL-7F3K9M2Q"})).unwrap();
+    assert!(!body(&s).contains("strength"));
+    // Back to it, after the agent changed the template elsewhere: still there.
+    s.run("agent.render", &json!({"client": "CL-2Q8D4R7T"})).unwrap();
+    agent(&mut s, "agent.exec", json!({"command": "text.insert", "params": {"text": "ten"}, "at": {"quote": "twelve"}, "reason": "shorter"}))
+        .unwrap();
+    assert!(body(&s).contains("on the strength of") && body(&s).contains("runs for ten months"), "{}", body(&s));
+    // A value inside the edited paragraph still comes from the data (placeholders kept).
+    let l = crate::layer(&s);
+    assert_eq!(l.overlays.len(), 1);
+    // ⌘Z takes the copy's edit back (the agent's edit was later: two undos).
+    s.run("edit.undo", &json!({})).unwrap();
+    s.run("edit.undo", &json!({})).unwrap();
+    assert!(!body(&s).contains("strength"), "{}", body(&s));
+    assert!(body(&s).contains("Brightwater Shipping Ltd"), "still the client's copy");
+}
+
+#[test]
+fn the_files_own_data_is_editable_in_place_and_crm_values_and_logic_are_not() {
+    let mut s = demo();
+    // The file's data: made from the placeholders, editable; an edit goes back to the block.
+    s.run("agent.render", &json!({"client": "file"})).unwrap();
+    assert!(body(&s).contains("To [name], "), "{}", body(&s));
+    select(&mut s, "[name]");
+    s.run("text.insert", &json!({"text": "Acme Ltd"})).unwrap();
+    assert!(body(&s).contains("To Acme Ltd, ") && body(&s).contains("compliance file of Acme Ltd:"), "every use: {}", body(&s));
+    assert_eq!(crate::layer(&s).data.as_ref().unwrap()["client"]["name"], "Acme Ltd");
+    assert!(crate::layer(&s).overlays.is_empty(), "a value edit is not a copy edit");
+    // Part of a value and the text after it: the value goes whole.
+    select(&mut s, "Ltd: the review");
+    s.run("text.delete", &json!({})).unwrap();
+    assert!(
+        body(&s).contains("compliance file of  of its corporate records") || body(&s).contains("compliance file of of its corporate records"),
+        "{}",
+        body(&s)
+    );
+    // The agent sees no values, only placeholders.
+    assert!(agent(&mut s, "agent.fileData", json!({})).is_err());
+    // A CRM client: its values are read only; a loop's repetitions too.
+    s.run("agent.render", &json!({"client": "CL-2Q8D4R7T"})).unwrap();
+    select(&mut s, "Tamsin Rook");
+    s.run("text.insert", &json!({"text": "T. Rook"})).unwrap();
+    assert!(body(&s).contains("Tamsin Rook"));
+    assert!(s.status.contains("loop or a condition"), "{}", s.status);
+}
+
+#[test]
+fn a_copy_edit_moves_to_the_template_and_a_changed_template_flags_it() {
+    let mut s = demo();
+    s.run("agent.render", &json!({"client": "CL-2Q8D4R7T"})).unwrap();
+    select(&mut s, "give no assurance");
+    s.run("text.insert", &json!({"text": "give no opinion"})).unwrap();
+    let id = crate::layer(&s).overlays[0].id.clone();
+    // The template paragraph changes underneath: the copy keeps its text, flagged.
+    agent(
+        &mut s,
+        "agent.exec",
+        json!({"command": "text.insert", "params": {"text": "statements"}, "at": {"quote": "documents the client provides"}, "reason": "precise"}),
+    )
+    .unwrap();
+    assert!(body(&s).contains("give no opinion"));
+    assert!(crate::layer(&s).overlays[0].conflict, "flagged");
+    s.run("agent.discardCopyEdit", &json!({"id": id})).unwrap();
+    assert!(body(&s).contains("statements") && !body(&s).contains("give no opinion"));
+    // Another edit, moved to the template: every client gets it.
+    select(&mut s, "give no assurance");
+    s.run("text.insert", &json!({"text": "give no opinion"})).unwrap();
+    let id = crate::layer(&s).overlays[0].id.clone();
+    s.run("agent.moveToTemplate", &json!({"id": id})).unwrap();
+    assert!(crate::layer(&s).overlays.is_empty());
+    assert!(template_text(&mut s).contains("give no opinion"));
+    assert!(body(&s).contains("Brightwater") && body(&s).contains("give no opinion"));
+    s.run("edit.undo", &json!({})).unwrap();
+    assert!(!template_text(&mut s).contains("give no opinion"));
+    assert_eq!(crate::layer(&s).overlays.len(), 1, "back as a copy edit");
 }

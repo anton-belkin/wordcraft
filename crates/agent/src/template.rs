@@ -34,6 +34,10 @@ pub struct Source {
     /// The placeholders filled in it, in order: `(paragraph path inside the block, start, end in
     /// the rendered text, length of the placeholder in the template)`.
     pub edits: Vec<(Vec<u32>, usize, usize, usize)>,
+    /// Inside a loop or a condition: the template's logic made it.
+    pub logic: bool,
+    /// From a person's edit of this client's copy (an overlay), not from the template's text.
+    pub overlay: bool,
 }
 
 /// Which side of a filled-in value a position inside it goes to.
@@ -163,6 +167,8 @@ struct Trace {
     base: usize,
     loops: Vec<(usize, usize)>,
     iterations: Vec<usize>,
+    /// Conditions entered.
+    ifs: usize,
     map: Vec<Source>,
     filled: Vec<(usize, Vec<u32>, usize, usize, String)>,
 }
@@ -207,7 +213,9 @@ fn expand(blocks: &[Arc<Block>], scope: &Map<String, Json>, depth: usize, out: &
                 };
                 let base = tr.base;
                 tr.base = base + a;
+                tr.ifs += 1;
                 expand(blocks.get(a..z).unwrap_or(&[]), scope, depth + 1, out, tr);
+                tr.ifs -= 1;
                 tr.base = base;
                 i = end + 1;
             }
@@ -215,7 +223,14 @@ fn expand(blocks: &[Arc<Block>], scope: &Map<String, Json>, depth: usize, out: &
             _ => {
                 let mut b = (**b).clone();
                 let at = out.len();
-                let mut src = Source { block: tr.base + i, loops: tr.loops.clone(), iterations: tr.iterations.clone(), edits: vec![] };
+                let mut src = Source {
+                    block: tr.base + i,
+                    loops: tr.loops.clone(),
+                    iterations: tr.iterations.clone(),
+                    edits: vec![],
+                    logic: !tr.loops.is_empty() || tr.ifs > 0,
+                    overlay: false,
+                };
                 let filled = &mut tr.filled;
                 fill_block(&mut b, scope, &mut vec![], &mut |path, s, e, tlen, l| {
                     src.edits.push((path.clone(), s, e, tlen));

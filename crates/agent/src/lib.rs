@@ -25,6 +25,7 @@ pub mod anchor;
 pub mod channel;
 pub mod commands;
 pub mod context;
+pub mod copyedit;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod cowork;
 pub mod crm;
@@ -82,6 +83,7 @@ pub fn install() {
         wordcraft_engine::ext::register_commands(runner::specs());
         wordcraft_engine::ext::register_commands(context::specs());
         wordcraft_engine::ext::register_commands(proposals::specs());
+        wordcraft_engine::ext::register_commands(copyedit::specs());
         wordcraft_engine::ext::register_observer(&KEEPER);
     });
 }
@@ -281,21 +283,44 @@ pub(crate) fn show_doc(s: &mut Session, doc: Document) {
 /// Renders the template for `client` (or, with `None`, puts the template back on screen).
 pub fn set_render(s: &mut Session, client: Option<&str>) -> Result<(), String> {
     ensure(s);
-    let data = match client {
-        Some(id) => Some(crm::client(id).ok_or_else(|| format!("no client `{id}` in the CRM"))?),
-        None => None,
+    // A client from the CRM must be there; "file" is the file's own data block.
+    let crm_data = match client {
+        Some(id) if id != copyedit::FILE => Some(crm::client(id).ok_or_else(|| format!("no client `{id}` in the CRM"))?),
+        _ => None,
     };
     let template = match s.ext.get_mut::<State>().and_then(|st| st.render.take()) {
         Some(r) => r.template,
         None => s.doc.clone(),
     };
-    let (Some(id), Some(data)) = (client, data) else {
+    let Some(id) = client else {
         show_doc(s, template);
         return Ok(());
     };
-    let (mut doc, filled, map) = template::render_mapped(&template, &serde_json::json!({"client": data}));
-    // The preview is read only: changes go to the template (the agent's, through the layer).
-    doc.settings.protection = Some("readOnly".into());
+    let l = layer(s);
+    let data = crm_data.unwrap_or_else(|| copyedit::file_data_of(&l, &template).get("client").cloned().unwrap_or_else(|| serde_json::json!({})));
+    // The person's edits of this client's copy stand in for their template paragraphs.
+    let (tpl, origin, conflicts) = copyedit::apply(&template, &l, id);
+    let (doc, filled, mut map) = template::render_mapped(&tpl, &serde_json::json!({"client": data}));
+    for src in &mut map {
+        if let Some((b, ov)) = origin.get(src.block) {
+            src.block = *b;
+            src.overlay = *ov;
+        }
+        for lp in &mut src.loops {
+            *lp = (origin.get(lp.0).map_or(lp.0, |x| x.0), origin.get(lp.1).map_or(lp.1, |x| x.0));
+        }
+    }
+    // Overlays whose template paragraph changed are flagged (not an edit).
+    if l.overlays.iter().any(|o| o.client == id && o.conflict != conflicts.contains(&o.id)) {
+        let dirty = s.dirty;
+        update(s, |l| {
+            for o in l.overlays.iter_mut().filter(|o| o.client == id) {
+                o.conflict = conflicts.contains(&o.id);
+            }
+        });
+        s.dirty = dirty;
+    }
+    // Editable: ordinary text stays in this copy, values follow their source (copyedit.rs).
     show_doc(s, doc);
     if let Some(st) = s.ext.get_mut::<State>() {
         st.render = Some(Render { client: id.to_string(), template, filled, map, proposal: None, proposal_key: String::new() });
@@ -382,6 +407,24 @@ pub fn template_range(s: &Session, a: &Pos, b: &Pos) -> Option<(Pos, Pos, bool)>
             tb = body(l)?.1;
         }
     }
+    // A paragraph the person edited in this copy: its whole template paragraph.
+    let whole = |p: &Pos, end: bool| -> Option<Pos> {
+        let src = r.map.get(*p.path.0.first()? as usize).filter(|x| x.overlay)?;
+        let paths: Vec<_> = t.para_paths(StoryRef::Body).into_iter().filter(|x| x.0.first() == Some(&(src.block as u32))).collect();
+        let path = if end { paths.last()? } else { paths.first()? }.clone();
+        let off = if end { anchor::para_text(t, &path).map_or(0, str::len) } else { 0 };
+        Some(Pos::new(StoryRef::Body, path, off))
+    };
+    if la.is_empty()
+        && let Some(x) = whole(a, false)
+    {
+        ta = x;
+    }
+    if lb.is_empty()
+        && let Some(x) = whole(b, true)
+    {
+        tb = x;
+    }
     let (ta, tb) = (t.clamp(&ta), t.clamp(&tb));
     (ta <= tb).then_some((ta, tb, !la.is_empty() || !lb.is_empty()))
 }
@@ -436,6 +479,8 @@ thread_local! {
     static PREVIEW_ASK: std::cell::RefCell<Option<Traced>> = const { std::cell::RefCell::new(None) };
     /// The reader's selection in the client's copy, to put back after a command ran on the template.
     static READER_SEL: std::cell::RefCell<Vec<Option<(Pos, Pos)>>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// The copy before a person's edit of a client's copy (to check it, and take it back).
+    static COPY_BEFORE: std::cell::RefCell<Vec<Option<(wordcraft_doc::Blocks, wordcraft_engine::EditSnapshot)>>> = const { std::cell::RefCell::new(Vec::new()) };
     /// The selection a Copy widened over places' bookmarks, to put back after it.
     static COPY_SEL: std::cell::RefCell<Vec<Option<Selection>>> = const { std::cell::RefCell::new(Vec::new()) };
 }
@@ -481,6 +526,15 @@ impl Observer for Keeper {
         }
         PREVIEW_ASK.with(|w| *w.borrow_mut() = asked);
         SWAPPED.with(|w| w.borrow_mut().push(swapped));
+        // The person editing a client's copy: values are one block; the edit is checked after.
+        let client_copy = render_state(s).is_some_and(|r| r.proposal.is_none()) && !commands::in_agent_exec() && !commands::is_agent(params);
+        let edits =
+            client_copy && s.registry.get(id).is_some_and(|c| c.mutates) && !id.starts_with("agent.") && !id.starts_with("file.") && !is_history(id);
+        if client_copy && (edits || id == "edit.copy") {
+            widen_over_values(s);
+        }
+        let copy_before = edits.then(|| (s.doc.body.clone(), s.edit_snapshot()));
+        COPY_BEFORE.with(|w| w.borrow_mut().push(copy_before));
         let mutates = s.registry.get(id).is_some_and(|c| c.mutates) || is_history(id);
         let places = (mutates && render_state(s).is_none()).then(|| topics::before(s));
         PLACES_BEFORE.with(|w| w.borrow_mut().push(places));
@@ -499,6 +553,12 @@ impl Observer for Keeper {
 
     fn after(&self, s: &mut Session, id: &str, params: &Json, result: &CmdResult) {
         let swapped = SWAPPED.with(|w| w.borrow_mut().pop()).flatten();
+        let copy_before = COPY_BEFORE.with(|w| w.borrow_mut().pop()).flatten();
+        if let Some((body, snap)) = copy_before
+            && result.is_ok()
+        {
+            copy_edit_after(s, &body, snap);
+        }
         let places = PLACES_BEFORE.with(|w| w.borrow_mut().pop()).flatten();
         if let Some(sel) = COPY_SEL.with(|w| w.borrow_mut().pop()).flatten()
             && id == "edit.copy"
@@ -596,6 +656,58 @@ fn trace(s: &Session, params: &Json) -> Option<Traced> {
 /// The passage of a question being asked on the client's copy, in the template (once).
 pub(crate) fn take_preview_ask() -> Option<Traced> {
     PREVIEW_ASK.with(|w| w.borrow_mut().take())
+}
+
+/// A selection that takes part of a client value takes all of it (values are one block).
+fn widen_over_values(s: &mut Session) {
+    let Some(r) = render_state(s) else { return };
+    let (a, b) = s.sel.ordered();
+    if a == b {
+        return;
+    }
+    let (mut na, mut nb) = (a.clone(), b.clone());
+    for f in &r.filled {
+        let fa = Pos::new(StoryRef::Body, f.path.clone(), f.start);
+        let fb = Pos::new(StoryRef::Body, f.path.clone(), f.end);
+        if fa < b && a < fb {
+            na = na.min(fa);
+            nb = nb.max(fb);
+        }
+    }
+    if (na.clone(), nb.clone()) != (a.clone(), b.clone()) {
+        let forward = s.sel.anchor <= s.sel.focus;
+        s.sel = if forward { Selection { anchor: na, focus: nb } } else { Selection { anchor: nb, focus: na } };
+    }
+}
+
+/// After the person's edit of a client's copy: taken back, and recorded as what it means (an
+/// edit of this copy, or a value of the file's data) — or refused.
+fn copy_edit_after(s: &mut Session, before: &wordcraft_doc::Blocks, snap: wordcraft_engine::EditSnapshot) {
+    let Some(r) = render_state(s).cloned() else { return };
+    let outcome = copyedit::analyze(before, &s.doc.body, &r);
+    let params = match outcome {
+        copyedit::Outcome::Nothing => return,
+        copyedit::Outcome::Refuse(msg) => {
+            s.restore(snap);
+            s.status = msg;
+            return;
+        }
+        copyedit::Outcome::Overlay { block, blocks } => {
+            let blocks: Vec<Json> = blocks.iter().filter_map(|b| serde_json::to_value(b).ok()).collect();
+            serde_json::json!({"client": r.client, "block": block, "blocks": blocks})
+        }
+        copyedit::Outcome::Value { label, text } => serde_json::json!({"client": r.client, "label": label, "value": text}),
+    };
+    // Where the person is now, in text terms (the copy is rendered again).
+    let (sa, sf) = (text_offset(&s.doc, &s.sel.anchor), text_offset(&s.doc, &s.sel.focus));
+    s.restore(snap);
+    if let Err(e) = s.run("agent.copyEdit", &params) {
+        s.status = e.to_string();
+        return;
+    }
+    let a = s.doc.clamp(&from_text_offset(&s.doc, &sa, true));
+    let f = s.doc.clamp(&from_text_offset(&s.doc, &sf, true));
+    s.sel = Selection { anchor: a, focus: f };
 }
 
 /// Finds every anchor again after an edit.

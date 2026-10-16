@@ -59,6 +59,11 @@ pub enum Op {
         question: Option<String>,
         note: Option<Note>,
     },
+    /// The person's edits of clients' copies and the file's data block, before and after.
+    CopyEdits {
+        before: Box<(Vec<crate::copyedit::Overlay>, Option<serde_json::Value>)>,
+        after: Box<(Vec<crate::copyedit::Overlay>, Option<serde_json::Value>)>,
+    },
     /// The document's context (the Agent tab's Context group), before and after.
     Context {
         before: Option<crate::context::Context>,
@@ -158,6 +163,7 @@ fn undo(s: &mut Session, op: &Op) {
         }
         Op::AddPlace => {}
         Op::Context { before, .. } => set_context(s, before),
+        Op::CopyEdits { before, .. } => copy_edits(s, before),
         Op::Proposal { topic, before, question, note, .. } => proposal(s, topic, before, question, note, true),
     }
 }
@@ -192,6 +198,7 @@ fn redo(s: &mut Session, op: &Op) {
         }
         Op::AddPlace => {}
         Op::Context { after, .. } => set_context(s, after),
+        Op::CopyEdits { after, .. } => copy_edits(s, after),
         Op::Proposal { topic, after, question, note, .. } => proposal(s, topic, after, question, note, false),
     }
 }
@@ -213,6 +220,14 @@ fn proposal(s: &mut Session, topic: &str, e: &crate::layer::EditProposal, questi
                 l.notes.push(n.clone());
             }
         }
+    });
+}
+
+fn copy_edits(s: &mut Session, v: &(Vec<crate::copyedit::Overlay>, Option<serde_json::Value>)) {
+    let v = v.clone();
+    crate::update(s, |l| {
+        l.overlays = v.0;
+        l.data = v.1;
     });
 }
 

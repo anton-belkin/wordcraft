@@ -77,6 +77,19 @@ upstream. Each one accepted upstream removes its lines from the patch.
   (`{{client.name}}`, `{% for ubo in client.ubos %}…{% endfor %}`, `{% if client.vip %}…`), read only;
   the template is kept underneath. The agent reads and edits the template (its `run_command` is
   applied to the template and the preview re-renders at once); Save and Undo act on the template.
+  **A client's copy is editable** (`copyedit.rs`). Ordinary text the person edits stays in
+  that copy only: the paragraph is kept as an overlay of that client's copy, in template form
+  (values back as placeholders), re-applied whenever the copy is rendered, so template changes
+  elsewhere keep it and data changes still reach it; if the template paragraph itself changed, the
+  overlay keeps its text and is flagged (a red bar in the margin, purple otherwise). Click the bar
+  for **Move to template** (every client gets it; one undo step) or **Discard this edit**. Client
+  values are one block: a selection that takes part of one takes all of it, an edit that would
+  split one is refused. Values from the file's own data block (**Show: This file's data**, kept in
+  the agent layer as `{client: {...}}`, made from the template's placeholders at first) are
+  edited in place and written back to the block, so every use changes; CRM values are read only.
+  Loop and condition output is read only for the person. An edit in the copy runs as its command,
+  is checked, taken back and recorded as the person's layer step (`agent.copyEdit`), so its undo
+  step holds the template, never the copy.
   The reader asks on the client's copy without switching: the renderer keeps a source map (each
   rendered block's template block, loops and iteration, and where values were filled in), and the
   question's place goes on the template text it came from. That is exact for a passage of template

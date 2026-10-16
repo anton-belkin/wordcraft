@@ -103,6 +103,45 @@ pub(crate) fn paint(st: &mut AgentUi, app: &WordApp, ui: &Ui, painter: &Painter,
         }
     }
 
+    // A client's copy: the paragraphs the person edited there, marked in the left margin.
+    for (block, id, conflict) in wordcraft_agent::copyedit::edited_blocks(s) {
+        let paths: Vec<_> = paras.iter().filter(|p| p.0.first() == Some(&(block as u32))).cloned().collect();
+        let (Some(first), Some(last)) = (paths.first(), paths.last()) else { continue };
+        let a = wordcraft_doc::Pos::new(wordcraft_doc::StoryRef::Body, first.clone(), 0);
+        let b = wordcraft_doc::Pos::new(
+            wordcraft_doc::StoryRef::Body,
+            last.clone(),
+            wordcraft_agent::anchor::para_text(&s.doc, last).map_or(0, str::len),
+        );
+        let rects = g.range_rects(app, &a, &b);
+        let Some((page, top)) = rects.first().copied() else { continue };
+        let bottom = rects.iter().filter(|(pg, _)| *pg == page).map(|(_, r)| r.bottom()).fold(top.bottom(), f32::max);
+        let Some(pr) = g.pages().get(page).copied() else { continue };
+        let color = if conflict { Color32::from_rgb(0xD1, 0x34, 0x38) } else { p.agent };
+        let bar = Rect::from_min_max(pos2(pr.left() + 30.0, top.top()), pos2(pr.left() + 33.0, bottom));
+        if !visible(&bar) {
+            continue;
+        }
+        painter.rect_filled(bar, CornerRadius::same(1), color);
+        let resp = ui.interact(bar.expand2(vec2(5.0, 0.0)), ui.id().with(("agent_copy_edit", id.as_str())), Sense::click());
+        let tip = if conflict {
+            "Your edit in this copy. The template's paragraph changed since: your text is kept. Click to move it to the template or discard it."
+        } else {
+            "Your edit in this copy only (other clients and the template don't have it). Click to move it to the template or discard it."
+        };
+        let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tip);
+        egui::Popup::menu(&resp).show(|ui| {
+            if ui.button("Move to template").on_hover_text("Every client's copy gets this text").clicked() {
+                st.acts.push(Act::Run("agent.moveToTemplate", serde_json::json!({"id": id})));
+                ui.close();
+            }
+            if ui.button("Discard this edit").on_hover_text("The copy shows the template's text again").clicked() {
+                st.acts.push(Act::Run("agent.discardCopyEdit", serde_json::json!({"id": id})));
+                ui.close();
+            }
+        });
+    }
+
     // Places: the open topic's outlined; every place's marker in the margin.
     let all = topics::resolve(s);
     let time = ui.input(|i| i.time);

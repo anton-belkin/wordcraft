@@ -442,6 +442,12 @@ pub struct Layer {
     /// The folder that session runs in (a session is resumed only there).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub agent_cwd: String,
+    /// The person's edits of clients' copies (kept per client, re-applied after each render).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub overlays: Vec<crate::copyedit::Overlay>,
+    /// The file's own client data (`{"client": {...}}`): a copy rendered from it is editable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
     /// What the agent knows: the document's context (`None`: the app's last used).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<crate::context::Context>,
@@ -487,7 +493,7 @@ impl Layer {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.anchors.is_empty() && self.log.is_empty() && self.topics.is_empty()
+        self.anchors.is_empty() && self.log.is_empty() && self.topics.is_empty() && self.overlays.is_empty() && self.data.is_none()
     }
 
     pub fn topic(&self, id: &str) -> Option<&Topic> {

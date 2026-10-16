@@ -238,14 +238,29 @@ pub(crate) fn show(st: &mut AgentUi, app: &mut WordApp, ui: &mut Ui) {
             if template {
                 let clients = wordcraft_agent::crm::clients();
                 let current = wordcraft_agent::render_state(&app.session).map(|r| r.client.clone());
-                let name_of = |id: &str| clients.iter().find(|c| c["id"] == id).and_then(|c| c["name"].as_str()).unwrap_or(id).to_string();
+                let name_of = |id: &str| {
+                    if id == wordcraft_agent::copyedit::FILE {
+                        return "This file's data".to_string();
+                    }
+                    clients.iter().find(|c| c["id"] == id).and_then(|c| c["name"].as_str()).unwrap_or(id).to_string()
+                };
                 let shown = current.as_deref().map_or_else(|| "Template".to_string(), name_of);
-                let pick = small(ui, "mergeField", &format!("Show: {}", clip(&shown, 22)), true, "Show the template filled in for a client (read only). Your agent keeps working on the template and never sees the client's data.");
+                let pick = small(ui, "mergeField", &format!("Show: {}", clip(&shown, 22)), true, "Show the template filled in for a client. Your edits stay in that copy; your agent keeps working on the template and never sees the client's data.");
                 egui::Popup::menu(&pick).show(|ui| {
                     if ui.selectable_label(current.is_none(), "The template (placeholders)").clicked() {
                         acts.push(Act::Run("agent.render", json!({"client": null})));
                         ui.close();
                     }
+                    let file = wordcraft_agent::copyedit::FILE;
+                    if ui
+                        .selectable_label(current.as_deref() == Some(file), "This file's data")
+                        .on_hover_text("The client data kept in this file: edit a value in the copy and it changes everywhere it is used")
+                        .clicked()
+                    {
+                        acts.push(Act::Run("agent.render", json!({"client": file})));
+                        ui.close();
+                    }
+                    ui.separator();
                     for c in &clients {
                         let id = c["id"].as_str().unwrap_or("");
                         let name = c["name"].as_str().unwrap_or(id);
