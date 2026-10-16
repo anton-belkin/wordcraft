@@ -49,6 +49,8 @@ pub const TABLE: &[(&str, Class)] = &[
     ("mcp", Class::Layer(5)),
     ("zotero", Class::Layer(5)),
     ("ui-egui", Class::Layer(6)),
+    ("agent", Class::Layer(5)),    // fork:agent — the agent layer (FORK.md)
+    ("agent-ui", Class::Layer(6)), // fork:agent
     ("testkit", Class::Testkit),
     // apps and tooling
     ("wordcraft", Class::Exempt),
@@ -61,7 +63,7 @@ pub const TABLE: &[(&str, Class)] = &[
 /// The L0 foundation is a small chain: `raster` builds on `color` and
 /// `geom`, which the §3 diagram draws on one line. The GPU backend (`gpu`)
 /// reuses the CPU reference (`compose`) for LUTs and parity tests.
-pub const INTRA_LAYER_ORDER: &[&[&str]] = &[&["doc", "fonts"]];
+pub const INTRA_LAYER_ORDER: &[&[&str]] = &[&["doc", "fonts"], &["mcp", "agent"], &["ui-egui", "agent-ui"]]; // fork:agent — + the agent layer
 
 fn intra_layer_allowed(from: &str, to: &str) -> bool {
     let (from, to) = (short_name(from), short_name(to));

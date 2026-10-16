@@ -1,0 +1,226 @@
+//! The agent's MCP surface: JSON-RPC 2.0 (MCP `2025-06-18`) whose tools map onto `agent.*`
+//! commands of the running app. The tool names are the ones GridCraft's agent layer uses, so one
+//! agent skill works across the Craft apps. Every read is masked; no tool returns client data.
+
+use serde_json::{Value, json};
+use wordcraft_mcp::Backend;
+
+pub const PROTOCOL_VERSION: &str = "2025-06-18";
+const SUPPORTED: &[&str] = &[PROTOCOL_VERSION, "2025-03-26", "2024-11-05"];
+
+const INSTRUCTIONS: &str = "You are connected to the WordCraft document the user has open, through its agent layer. \
+The user reviews and signs off on this document; your job is to make that fast. They ask questions on passages: watch for them \
+(GET http://127.0.0.1:<port>/events streams one line per new question, or call wait_for_questions), claim_question, \
+investigate with get_context / read_document, then answer_question with links to the paragraphs and sources you used \
+(href \"para:12\", \"note:n3\" or https URLs with a one-line summary). Leave prepared explanations and answers to likely questions \
+with add_note, and log decisions (log_decision). Change the document only with run_command, pointing at text with `at` \
+{paragraph, quote} and giving a reason and a source. PRIVACY: text marked as client data reads as {{placeholder}} in everything \
+you get (get_context.clientData lists them); refer to it by its placeholder and never try to find the real value. You cannot write \
+into client data. When the document is a template (get_context.template), edit it with placeholders from that vocabulary: the user \
+renders it for a client themselves; you never see a client's values.";
+
+fn tool(name: &str, desc: &str, props: Value, required: &[&str], read_only: bool) -> Value {
+    json!({
+        "name": name,
+        "description": desc,
+        "inputSchema": {"type": "object", "properties": props, "required": required, "additionalProperties": false},
+        "annotations": {"readOnlyHint": read_only, "destructiveHint": false, "openWorldHint": false},
+    })
+}
+
+fn s(desc: &str) -> Value {
+    json!({"type": "string", "description": desc})
+}
+fn n(desc: &str) -> Value {
+    json!({"type": "number", "description": desc})
+}
+fn links() -> Value {
+    json!({"type": "array", "description": "Links: {label, href, summary?}. href is https://…, para:<n> or note:<id>; give sources a one-line summary", "items": {
+        "type": "object", "properties": {"label": {"type": "string"}, "href": {"type": "string"}, "summary": {"type": "string"}}, "required": ["label", "href"]}})
+}
+fn para() -> Value {
+    n("Paragraph number, as read_document shows it")
+}
+fn quote() -> Value {
+    s("Exact text inside that paragraph, as read_document shows it (placeholders included); omit for the whole paragraph")
+}
+
+pub fn tools() -> Vec<Value> {
+    vec![
+        tool(
+            "get_context",
+            "Overview of the open document: title, outline (headings with paragraph numbers), client-data placeholders, the template vocabulary if it is a template, open questions, recent history.",
+            json!({}),
+            &[],
+            true,
+        ),
+        tool(
+            "read_document",
+            "Read paragraphs (numbered, with style). Client data reads as {{placeholder}}.",
+            json!({"from": n("First paragraph (default 0)"), "count": n("How many (default 400)")}),
+            &[],
+            true,
+        ),
+        tool(
+            "list_questions",
+            "Questions the user asked on passages. status: pending (new), working (claimed), answered, open (pending+working) or all.",
+            json!({"status": {"type": "string", "enum": ["pending", "working", "answered", "open", "all"]}}),
+            &[],
+            true,
+        ),
+        tool(
+            "wait_for_questions",
+            "Block until there is a pending question (or the timeout passes) and return the pending ones. An alternative to watching /events.",
+            json!({"timeout_seconds": n("Up to 50 (default 25)")}),
+            &[],
+            true,
+        ),
+        tool(
+            "claim_question",
+            "Take a pending question so the user sees it is being worked on.",
+            json!({"id": s("Question id, e.g. \"q3\"")}),
+            &["id"],
+            false,
+        ),
+        tool(
+            "answer_question",
+            "Answer a question; the passage shows \"answer ready\". Answer first, short paragraphs; link the paragraphs and sources you used.",
+            json!({"id": s("Question id"), "text": s("The answer (plain text, short paragraphs)"), "links": links()}),
+            &["id", "text"],
+            false,
+        ),
+        tool(
+            "add_note",
+            "Leave a note on a passage, shown in the margin: why it is written this way (explanation), a prepared answer to a likely question (faq, title = the question), an assumption, or a source (link + summary).",
+            json!({"paragraph": para(), "quote": quote(), "text": s("Note text"), "title": s("Short title (for faq: the question)"), "kind": {"type": "string", "enum": ["explanation", "faq", "assumption", "source"]}, "links": links()}),
+            &["paragraph", "text"],
+            false,
+        ),
+        tool(
+            "log_decision",
+            "Record a decision in the document's history (why the document is the way it is), optionally on a passage.",
+            json!({"text": s("The decision and its reason"), "paragraph": para(), "quote": quote(), "source": s("What it is based on")}),
+            &["text"],
+            false,
+        ),
+        tool("get_layer", "The whole agent layer: questions, notes, client-data placeholders, history.", json!({}), &[], true),
+        tool(
+            "run_command",
+            "Change the document with a WordCraft command (text.insert, format.bold, para.style…; see list_commands). `at` selects the text first. Logged as yours with the reason and source. Commands that read or search the real text are refused.",
+            json!({"command": s("Command id"), "params": {"type": "object"}, "at": {"type": "object", "description": "{paragraph, quote?, occurrence?}: the text to act on", "properties": {"paragraph": para(), "quote": quote(), "occurrence": n("Which match of the quote (0-based)")}}, "reason": s("Why"), "source": s("What it is based on")}),
+            &["command", "reason"],
+            false,
+        ),
+        tool(
+            "list_commands",
+            "List WordCraft commands that change the document (id, label, params).",
+            json!({"search": s("Substring to filter on")}),
+            &[],
+            true,
+        ),
+    ]
+}
+
+fn exec(b: &mut dyn Backend, command: &str, mut params: Value) -> Result<Value, String> {
+    if let Value::Object(o) = &mut params {
+        o.insert("actor".into(), json!("agent"));
+        o.insert("masked".into(), json!(true));
+    }
+    b.call("engine.execute", json!({"command": command, "params": params}))
+}
+
+fn pick(args: &Value, keys: &[&str]) -> Value {
+    let mut o = serde_json::Map::new();
+    for k in keys {
+        if let Some(v) = args.get(*k) {
+            o.insert((*k).to_string(), v.clone());
+        }
+    }
+    Value::Object(o)
+}
+
+pub fn call(b: &mut dyn Backend, name: &str, args: &Value) -> Result<Value, String> {
+    match name {
+        "get_context" => exec(b, "agent.context", json!({})),
+        "read_document" | "read_range" => exec(b, "agent.read", pick(args, &["from", "count"])),
+        "list_questions" => exec(b, "agent.questions", pick(args, &["status"])),
+        "wait_for_questions" => {
+            let secs = args.get("timeout_seconds").and_then(Value::as_f64).filter(|x| x.is_finite()).unwrap_or(25.0).clamp(0.0, 50.0);
+            let mut polls = (secs * 2.0) as u32;
+            loop {
+                let v = exec(b, "agent.questions", json!({"status": "pending"}))?;
+                if v.as_array().is_some_and(|a| !a.is_empty()) || polls == 0 {
+                    return Ok(v);
+                }
+                polls -= 1;
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+        }
+        "claim_question" => exec(b, "agent.claim", pick(args, &["id"])),
+        "answer_question" => exec(b, "agent.answer", pick(args, &["id", "text", "links"])),
+        "add_note" => exec(b, "agent.note", pick(args, &["paragraph", "quote", "occurrence", "text", "title", "kind", "links"])),
+        "log_decision" => exec(b, "agent.decision", pick(args, &["text", "paragraph", "quote", "source"])),
+        "get_layer" => exec(b, "agent.layer", json!({})),
+        "run_command" => exec(b, "agent.exec", pick(args, &["command", "params", "at", "reason", "source"])),
+        "list_commands" => {
+            let all = b.call("engine.commands", json!({}))?;
+            let q = args.get("search").and_then(Value::as_str).unwrap_or("").to_lowercase();
+            let list: Vec<Value> = all
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter(|c| {
+                            let id = c.get("id").and_then(Value::as_str).unwrap_or("");
+                            let label = c.get("label").and_then(Value::as_str).unwrap_or("");
+                            let mutates = c.get("mutates").and_then(Value::as_bool).unwrap_or(false);
+                            mutates
+                                && !id.starts_with("agent.")
+                                && !id.starts_with("ui.")
+                                && !id.starts_with("file.")
+                                && (q.is_empty() || id.to_lowercase().contains(&q) || label.to_lowercase().contains(&q))
+                        })
+                        .take(400)
+                        .map(|c| pick(c, &["id", "label", "params"]))
+                        .collect()
+                })
+                .unwrap_or_default();
+            Ok(Value::Array(list))
+        }
+        other => Err(format!("unknown tool `{other}`")),
+    }
+}
+
+/// Handles one JSON-RPC message; `None` for notifications.
+pub fn handle(b: &mut dyn Backend, msg: &Value) -> Option<Value> {
+    let id = msg.get("id").cloned()?;
+    let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
+    let params = msg.get("params").cloned().unwrap_or(Value::Null);
+    let ok = |r: Value| json!({"jsonrpc": "2.0", "id": id, "result": r});
+    let err = |code: i64, m: String| json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": m}});
+    Some(match method {
+        "initialize" => {
+            let asked = params.get("protocolVersion").and_then(Value::as_str).unwrap_or(PROTOCOL_VERSION);
+            let version = if SUPPORTED.contains(&asked) { asked } else { PROTOCOL_VERSION };
+            ok(json!({
+                "protocolVersion": version,
+                "capabilities": {"tools": {"listChanged": false}},
+                "serverInfo": {"name": "wordcraft-agent", "title": "WordCraft agent layer", "version": env!("CARGO_PKG_VERSION")},
+                "instructions": INSTRUCTIONS,
+            }))
+        }
+        "ping" => ok(json!({})),
+        "tools/list" => ok(json!({"tools": tools()})),
+        "tools/call" => {
+            let name = params.get("name").and_then(Value::as_str).unwrap_or("");
+            let args = params.get("arguments").cloned().filter(Value::is_object).unwrap_or_else(|| json!({}));
+            match call(b, name, &args) {
+                Ok(v) => ok(json!({"content": [{"type": "text", "text": serde_json::to_string_pretty(&v).unwrap_or_default()}], "isError": false})),
+                Err(e) => ok(json!({"content": [{"type": "text", "text": e}], "isError": true})),
+            }
+        }
+        "resources/list" => ok(json!({"resources": []})),
+        "prompts/list" => ok(json!({"prompts": []})),
+        "logging/setLevel" => ok(json!({})),
+        other => err(-32601, format!("method not found: {other}")),
+    })
+}

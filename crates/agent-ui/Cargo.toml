@@ -1,0 +1,21 @@
+[package]
+name = "wordcraft-agent-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "WordCraft agent layer UI (fork): the Agent pane, badges and margin notes on the page, client-data marks, template client picker"
+
+[lints]
+workspace = true
+
+[dependencies]
+wordcraft-agent = { workspace = true }
+wordcraft-doc = { workspace = true }
+wordcraft-engine = { workspace = true }
+wordcraft-ui-egui = { workspace = true }
+egui = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+wordcraft-mcp = { workspace = true }
+egui_kittest = { workspace = true, features = ["wgpu", "snapshot"] }

@@ -28,6 +28,9 @@ wordcraft-zotero = { path = "crates/zotero" }
 wordcraft-control-key = { path = "crates/control-key" }
 wordcraft-ui-egui = { path = "crates/ui-egui" }
 wordcraft-metafile = { path = "crates/metafile" }
+# fork:agent — the agent layer (FORK.md)
+wordcraft-agent = { path = "crates/agent" }
+wordcraft-agent-ui = { path = "crates/agent-ui" }
 
 # foundation
 kurbo = { version = "0.13", features = ["serde"] }
