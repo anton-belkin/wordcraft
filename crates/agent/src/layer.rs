@@ -170,6 +170,9 @@ pub struct Layer {
     pub private: Vec<Private>,
     #[serde(default)]
     pub log: Vec<LogEntry>,
+    /// The background agent's session for this document (resumed when it is opened again).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub agent_session: String,
     /// Bumped on every change (not saved; lets views cache).
     #[serde(skip)]
     pub revision: u64,

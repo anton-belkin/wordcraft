@@ -47,6 +47,9 @@ pub fn specs() -> Vec<CommandSpec> {
             .pure(),
         c("agent.decision", "Log Decision", LOC, decision).params(r#"{"text": string, "paragraph"?: number, "quote"?: string, "source"?: string}"#).pure(),
         c("agent.layer", "Agent Layer", LOC, layer_cmd).params("{} → questions, notes, client-data ranges, history (masked)").pure(),
+        c("agent.ping", "Check the Agent Connection", LOC, ping)
+            .params(r#"{} — asks "is anyone there?" (a system question with kind ping: never shown, never saved)"#)
+            .pure(),
         c("agent.exec", "Run Command as Agent", LOC, exec)
             .params(r#"{"command": string, "params"?: object, "at"?: {"paragraph"?: number, "quote"?: string, "occurrence"?: number}, "reason": string, "source"?: string} — a changing command, logged as the agent's"#)
             .pure(),
@@ -339,6 +342,7 @@ fn masked(view: &View, v: &Json, mut out: Json) -> CmdResult {
 }
 
 fn context(s: &mut Session, v: &Json) -> CmdResult {
+    gate(v)?;
     let view = crate::view(s);
     let l = crate::layer(s);
     let doc = crate::agent_doc(s);
@@ -368,6 +372,7 @@ fn context(s: &mut Session, v: &Json) -> CmdResult {
 }
 
 fn read(s: &mut Session, v: &Json) -> CmdResult {
+    gate(v)?;
     let view = crate::view(s);
     let from = p::u64(v, "from").unwrap_or(0).min(usize::MAX as u64) as usize;
     let count = p::u64(v, "count").unwrap_or(400).clamp(1, 2_000) as usize;
@@ -415,19 +420,77 @@ fn status_matches(q: &Question, want: &str) -> bool {
     }
 }
 
+/// The agent's calls are refused while the connection is off.
+fn gate(v: &Json) -> Result<(), CmdError> {
+    if is_agent(v) && crate::presence::mode() == crate::presence::Mode::Off {
+        return Err(CmdError::Disabled("the agent connection is off in WordCraft (Agent tab ▸ Connection ▸ Mode)".into()));
+    }
+    Ok(())
+}
+
+fn ping_matches(p: &crate::presence::Ping, want: &str) -> bool {
+    match want {
+        "pending" | "working" | "answered" => p.status() == want,
+        "open" => p.answered_at.is_none(),
+        _ => true,
+    }
+}
+
 fn questions(s: &mut Session, v: &Json) -> CmdResult {
+    gate(v)?;
     let l = crate::layer(s);
     let want = p::str(v, "status").unwrap_or("all");
+    // The connection check first: an agent answers it at once.
+    // A check nobody answered in time has done its job ("No answer"): it goes to no one later.
+    let now = crate::now_ms();
+    let mut list: Vec<Json> = crate::ping(s)
+        .filter(|p| p.answered_at.is_some() || now.saturating_sub(p.asked_at) < crate::presence::PING_TIMEOUT_MS)
+        .filter(|p| ping_matches(p, want))
+        .map(|p| json!({"id": p.id, "kind": "ping", "text": crate::presence::PING_TEXT, "status": p.status(), "askedAt": p.asked_at}))
+        .into_iter()
+        .collect();
     if !l.questions.iter().any(|q| status_matches(q, want)) {
-        return Ok(json!([]));
+        return Ok(Json::Array(list));
     }
     let view = crate::view(s);
-    let list: Vec<Json> = l.questions.iter().filter(|q| status_matches(q, want)).map(|q| question_json(s, &view, q)).collect();
+    list.extend(l.questions.iter().filter(|q| status_matches(q, want)).map(|q| question_json(s, &view, q)));
     masked(&view, v, Json::Array(list))
 }
 
+fn ping(s: &mut Session, v: &Json) -> CmdResult {
+    if is_agent(v) {
+        return Err(bad("the connection check is the reader's"));
+    }
+    crate::ensure(s);
+    let p = crate::presence::Ping { id: format!("ping{}", crate::now_ms()), asked_at: crate::now_ms(), ..Default::default() };
+    let id = p.id.clone();
+    if let Some(st) = s.ext.get_mut::<crate::State>() {
+        st.ping = Some(p);
+    }
+    Ok(json!({"id": id}))
+}
+
+/// Claims or answers the connection check, if `id` is it.
+fn ping_reply(s: &mut Session, id: &str, answer: bool) -> bool {
+    let Some(st) = s.ext.get_mut::<crate::State>() else { return false };
+    match st.ping.as_mut() {
+        Some(p) if p.id == id => {
+            p.claimed = true;
+            if answer && p.answered_at.is_none() {
+                p.answered_at = Some(crate::now_ms());
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
 fn claim(s: &mut Session, v: &Json) -> CmdResult {
+    gate(v)?;
     let id = text_p(v, "id", 100)?;
+    if ping_reply(s, &id, false) {
+        return Ok(json!({"id": id}));
+    }
     let r = crate::update(s, |l| match l.questions.iter_mut().find(|q| q.id == id) {
         Some(q) if q.status == QuestionStatus::Pending => {
             q.status = QuestionStatus::Working;
@@ -440,8 +503,12 @@ fn claim(s: &mut Session, v: &Json) -> CmdResult {
 }
 
 fn answer(s: &mut Session, v: &Json) -> CmdResult {
+    gate(v)?;
     let id = text_p(v, "id", 100)?;
     let text = text_p(v, "text", 20_000)?;
+    if ping_reply(s, &id, true) {
+        return Ok(json!({"id": id, "check": "answered"}));
+    }
     let links = links_p(v);
     let ok = crate::update(s, |l| {
         let Some(q) = l.questions.iter_mut().find(|q| q.id == id) else { return false };
@@ -466,6 +533,7 @@ fn answer(s: &mut Session, v: &Json) -> CmdResult {
 }
 
 fn note(s: &mut Session, v: &Json) -> CmdResult {
+    gate(v)?;
     let text = text_p(v, "text", 20_000)?;
     let span = as_agent(v, || place(s, v))?;
     let kind = match p::str(v, "kind") {
@@ -485,6 +553,7 @@ fn note(s: &mut Session, v: &Json) -> CmdResult {
 }
 
 fn decision(s: &mut Session, v: &Json) -> CmdResult {
+    gate(v)?;
     let text = text_p(v, "text", 4_000)?;
     let anchor = if p::u64(v, "paragraph").is_some() || p::str(v, "quote").is_some() {
         let span = as_agent(v, || place(s, v))?;
@@ -535,6 +604,7 @@ pub fn layer_json(s: &Session, v: &Json) -> CmdResult {
 }
 
 fn layer_cmd(s: &mut Session, v: &Json) -> CmdResult {
+    gate(v)?;
     layer_json(s, v)
 }
 
@@ -588,6 +658,7 @@ fn private_fingerprint(s: &Session) -> Vec<(String, usize, bool)> {
 }
 
 fn exec(s: &mut Session, v: &Json) -> CmdResult {
+    gate(v)?;
     let command = text_p(v, "command", 200)?;
     let params = v.get("params").cloned().filter(Json::is_object).unwrap_or_else(|| json!({}));
     let Some(spec) = s.registry.get(&command).cloned() else { return Err(CmdError::Unknown(command)) };

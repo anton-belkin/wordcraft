@@ -17,7 +17,8 @@ with add_note, and log decisions (log_decision). Change the document only with r
 {paragraph, quote} and giving a reason and a source. PRIVACY: text marked as client data reads as {{placeholder}} in everything \
 you get (get_context.clientData lists them); refer to it by its placeholder and never try to find the real value. You cannot write \
 into client data. When the document is a template (get_context.template), edit it with placeholders from that vocabulary: the user \
-renders it for a client themselves; you never see a client's values.";
+renders it for a client themselves; you never see a client's values. A question with kind ping is a connection check: answer it at \
+once with \"here\", don't investigate.";
 
 fn tool(name: &str, desc: &str, props: Value, required: &[&str], read_only: bool) -> Value {
     json!({
@@ -148,7 +149,7 @@ pub fn call(b: &mut dyn Backend, name: &str, args: &Value) -> Result<Value, Stri
             let secs = args.get("timeout_seconds").and_then(Value::as_f64).filter(|x| x.is_finite()).unwrap_or(25.0).clamp(0.0, 50.0);
             let mut polls = (secs * 2.0) as u32;
             loop {
-                let v = exec(b, "agent.questions", json!({"status": "pending"}))?;
+                let v = exec(b, "agent.questions", json!({"status": "pending", "waiting": true}))?;
                 if v.as_array().is_some_and(|a| !a.is_empty()) || polls == 0 {
                     return Ok(v);
                 }
@@ -203,7 +204,7 @@ pub fn handle(b: &mut dyn Backend, msg: &Value) -> Option<Value> {
             let version = if SUPPORTED.contains(&asked) { asked } else { PROTOCOL_VERSION };
             ok(json!({
                 "protocolVersion": version,
-                "capabilities": {"tools": {"listChanged": false}},
+                "capabilities": {"tools": {"listChanged": false}, "experimental": {"claude/channel": {}}},
                 "serverInfo": {"name": "wordcraft-agent", "title": "WordCraft agent layer", "version": env!("CARGO_PKG_VERSION")},
                 "instructions": INSTRUCTIONS,
             }))

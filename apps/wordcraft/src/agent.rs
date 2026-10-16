@@ -3,7 +3,8 @@
 //!
 //! `--agent-port <port>` (or `WORDCRAFT_AGENT_PORT`) picks the port, `--no-agent` turns it off,
 //! `--agent-demo` opens the demo template, `--agent-stdio` serves MCP over stdio instead of
-//! opening a window (what Claude Desktop starts; see [`stdio_if_asked`]). With the agent on, the control channel starts too (on
+//! opening a window (what Claude Desktop starts; see [`stdio_if_asked`]), `--agent-mode
+//! connect|channel|background|off` sets how the agent comes in (remembered; never from a file). With the agent on, the control channel starts too (on
 //! 7981 unless `--control` says otherwise).
 
 /// Control port used for the agent when none was asked for.
@@ -14,6 +15,8 @@ const CONTROL_PORT: u16 = 7981;
 pub struct Options {
     pub port: Option<u16>,
     pub demo: bool,
+    /// `--agent-mode connect|channel|background|off` (else the one remembered from the last run).
+    pub mode: Option<wordcraft_agent::presence::Mode>,
 }
 
 /// Takes the agent's own arguments out of the command line; returns the rest.
@@ -21,6 +24,7 @@ pub fn take_args(args: Vec<String>) -> (Vec<String>, Options) {
     let mut o = Options {
         port: std::env::var("WORDCRAFT_AGENT_PORT").ok().and_then(|p| p.parse().ok()).or(Some(wordcraft_agent::server::DEFAULT_PORT)),
         demo: false,
+        mode: None,
     };
     let mut rest = Vec::with_capacity(args.len());
     let mut it = args.into_iter();
@@ -29,6 +33,7 @@ pub fn take_args(args: Vec<String>) -> (Vec<String>, Options) {
             "--agent-port" => o.port = it.next().and_then(|p| p.parse().ok()),
             "--no-agent" => o.port = None,
             "--agent-demo" => o.demo = true,
+            "--agent-mode" => o.mode = it.next().as_deref().and_then(wordcraft_agent::presence::Mode::parse),
             _ => rest.push(a),
         }
     }
@@ -58,6 +63,16 @@ pub fn start(o: Options, control: Option<u16>) {
     match wordcraft_agent::server::start(port, wordcraft_agent::server::control(format!("127.0.0.1:{control}"))) {
         Ok(port) => {
             wordcraft_agent_ui::set_server_url(format!("http://127.0.0.1:{port}/mcp"));
+            // The background agent: this server, files in the settings folder, the mode as last set.
+            wordcraft_agent::runner::set_config(wordcraft_agent::runner::Config {
+                mcp_url: format!("http://127.0.0.1:{port}/mcp"),
+                data_dir: wordcraft_control_key::settings_dir().map(|d| d.join("agent")),
+                ..Default::default()
+            });
+            match o.mode {
+                Some(m) => wordcraft_agent::runner::set_mode(m),
+                None => wordcraft_agent::presence::store_mode(wordcraft_agent::runner::load_mode().unwrap_or_default()),
+            }
             if let Some(e) = stdio_entry(Some(control)) {
                 wordcraft_agent_ui::set_stdio_entry(e);
             }
@@ -79,15 +94,14 @@ pub fn stdio_if_asked() {
     if let Some(v) = args.iter().position(|a| a == "--control").and_then(|i| args.get(i + 1)) {
         addr = if v.contains(':') { v.clone() } else { format!("127.0.0.1:{v}") };
     }
-    let mut backend = wordcraft_agent::stdio::Lazy::new(wordcraft_agent::server::control(addr));
-    let code = match wordcraft_agent::stdio::serve(&mut backend, std::io::stdin().lock(), std::io::stdout()) {
-        Ok(()) => 0,
-        Err(e) => {
-            let _ = std::io::Write::write_fmt(&mut std::io::stderr(), format_args!("wordcraft --agent-stdio: {e}\n"));
-            1
-        }
-    };
-    std::process::exit(code);
+    let agent_port = args
+        .iter()
+        .position(|a| a == "--agent-port")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|p| p.parse().ok())
+        .or_else(|| std::env::var("WORDCRAFT_AGENT_PORT").ok().and_then(|p| p.parse().ok()))
+        .unwrap_or(wordcraft_agent::server::DEFAULT_PORT);
+    std::process::exit(wordcraft_agent::stdio::run(addr, agent_port));
 }
 
 /// The command Claude Desktop should start to reach this app (this very executable in stdio mode).

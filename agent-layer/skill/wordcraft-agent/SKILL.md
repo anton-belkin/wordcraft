@@ -34,6 +34,8 @@ pending, or empty after up to 50 s; answer what it returned, then call it again.
 user says so. On startup also call `list_questions` with status `open`: questions
 asked before you connected are waiting too.
 
+A question with kind ping is a connection check: answer it at once with 'here', don't investigate.
+
 ## For each question
 
 1. `claim_question` at once: the passage shows the user you are on it.

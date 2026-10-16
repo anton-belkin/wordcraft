@@ -11,6 +11,7 @@
 //! - `{"method": "ui.inspect", "params": {…}}` a control-channel request;
 //! - `{"exec": "curl -s …"}` runs a shell command while the window keeps running, prints its output;
 //! - `{"pane": "questions"}` / `{"pane": null}` opens or closes the Agent pane;
+//! - `{"menu": "copy"}` / `{"menu": "mode"}` opens a menu of the Agent tab's Connection group;
 //! - `{"steps": 10}`, `{"shot": "/abs/out.png"}`.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -128,6 +129,9 @@ fn main() {
                 Some(tab) => wordcraft_agent_ui::request_pane(true, tab),
                 None => wordcraft_agent_ui::request_pane(false, "ask"),
             }
+            step_n(&mut harness, 4);
+        } else if let Some(m) = l.get("menu").and_then(Value::as_str) {
+            wordcraft_agent_ui::request_menu(m);
             step_n(&mut harness, 4);
         } else if let Some(n) = l.get("steps").and_then(Value::as_u64) {
             step_n(&mut harness, n as usize);

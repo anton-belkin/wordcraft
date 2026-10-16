@@ -82,6 +82,38 @@ upstream. Each one accepted upstream removes its lines from the patch.
   responses; GridCraft uses 7980) and reaches the document through the app's own loopback control
   channel. `/events` streams new questions, one JSON line each, for an agent's background monitor
   (`curl -sN http://127.0.0.1:7982/events`).
+- **Is anyone listening?** (`presence.rs`) The Connection group's status comes from a check and
+  from passive signals. *Check* (`agent.ping`) puts a system question in the queue, `"kind":
+  "ping"`, text "Is anyone there? (connection check; answer \"here\")": it goes out by every path
+  (list_questions, wait_for_questions, `/events`, the channel, the background agent), is never
+  shown as a question, has no badge and is never saved; an answer marks "Agent answering · checked
+  12 s ago · answered in N s"; no answer in 60 s is "No answer to check" (and the check then goes
+  to no one). Passive: an `/events` or channel stream connected, a `wait_for_questions` poll in the
+  last minute (its calls carry `waiting`, so HTTP and stdio count alike), the background agent
+  running: "Listener connected · not checked". Else "Nobody is listening". Stream polls carry
+  `poll`, so neither counts as the agent's last tool call.
+- **The app can bring the agent in itself**, in a mode the app sets (Agent tab ▸ Connection ▸
+  Mode, or `--agent-mode connect|channel|background|off`, remembered in the settings folder; never
+  from the file: a document someone sends must not start an agent that spends the reader's money).
+  - *I connect my agent*: MCP over HTTP or stdio (Claude Code, Cowork, any client). Copy ▸ the
+    Claude Code command, the monitor command, Connect Cowork.
+  - *Send to my Claude Code session* (Claude Code Channels, research preview): the server declares
+    `experimental["claude/channel"]` and streams each new question on `GET /mcp` (SSE) as
+    `notifications/claude/channel`; `wordcraft --agent-stdio` bridges them to stdout (Claude Code
+    spawns channel servers over stdio). Copy ▸ `claude mcp add wordcraft-channel -- <wordcraft>
+    --agent-stdio`, then `claude --dangerously-load-development-channels
+    server:wordcraft-channel`. Interactive sessions only (`-p` ignores channels).
+  - *Background agent* (`runner.rs`): one `claude -p --input-format stream-json --output-format
+    stream-json --verbose` per document, in the document's folder (its session sits with the
+    matter's files in Claude Desktop ▸ Code), named `WordCraft · <file>` (`--name`), with
+    `--mcp-config` + `--strict-mcp-config` (only the WordCraft server), `--allowedTools
+    "mcp__wordcraft__*"`, the skill as `--append-system-prompt-file`, `--max-turns 40`,
+    `--max-budget-usd 3.00`. It starts with the first waiting question and gets each new one once;
+    its session id is kept in the layer (`agentSession`), so reopening the document resumes it
+    (`--resume`); a failed resume or New session starts fresh from a summary of the history. Stop
+    is end of input, SIGINT, then kill. Never `--bare`. `WORDCRAFT_AGENT_COMMAND` picks another
+    CLI. Copy ▸ Open session in Claude Desktop, New session.
+  - *Off*: the agent's calls are refused ("the agent connection is off").
 
 ## Running it
 

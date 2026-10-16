@@ -1,0 +1,34 @@
+{"start": "demo", "width": 1440, "height": 900}
+{"serve": 7993}
+{"cmd": "ui.tab", "params": {"tab": "Agent"}}
+{"shot": "SHOTS/c1-nobody.png"}
+{"exec": "(curl -sN http://127.0.0.1:7993/events > SHOTS/events.log &) ; sleep 2"}
+{"shot": "SHOTS/c2-listener.png"}
+{"cmd": "agent.ping", "params": {}}
+{"exec": "sleep 3; cat SHOTS/events.log"}
+{"exec": "ID=$(curl -s -X POST http://127.0.0.1:7993/mcp -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"list_questions\",\"arguments\":{\"status\":\"pending\"}}}' | python3 -c 'import json,sys; print(json.loads(json.load(sys.stdin)[\"result\"][\"content\"][0][\"text\"])[0][\"id\"])'); curl -s -X POST http://127.0.0.1:7993/mcp -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"answer_question\",\"arguments\":{\"id\":\"'$ID'\",\"text\":\"here\"}}}'"}
+{"shot": "SHOTS/c3-answering.png"}
+{"exec": "pkill -f 'curl -sN http://127.0.0.1:7993/events'; sleep 1"}
+{"cmd": "agent.ping", "params": {}}
+{"shot": "SHOTS/c4-checking.png"}
+{"exec": "sleep 61"}
+{"shot": "SHOTS/c5-no-answer.png"}
+{"menu": "mode"}
+{"shot": "SHOTS/c6-mode-menu.png"}
+{"steps": 2}
+{"menu": "none"}
+{"menu": "copy"}
+{"shot": "SHOTS/c7-copy-connect.png"}
+{"menu": "none"}
+{"cmd": "agent.agentMode", "params": {"mode": "channel"}}
+{"menu": "copy"}
+{"shot": "SHOTS/c8-copy-channel.png"}
+{"menu": "none"}
+{"cmd": "agent.agentMode", "params": {"mode": "background"}}
+{"steps": 10}
+{"menu": "copy"}
+{"shot": "SHOTS/c9-copy-background.png"}
+{"menu": "none"}
+{"cmd": "agent.agentMode", "params": {"mode": "off"}}
+{"shot": "SHOTS/c10-off.png"}
+{"cmd": "agent.agentMode", "params": {"mode": "connect"}}

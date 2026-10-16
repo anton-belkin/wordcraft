@@ -16,6 +16,8 @@ mod overlay;
 mod pane;
 mod ribbon;
 
+pub use ribbon::request_menu;
+
 use std::sync::{Mutex, OnceLock};
 
 use egui::{Color32, Ui};
@@ -354,6 +356,8 @@ impl AgentUi {
 impl UiExtension for AgentUi {
     fn frame(&mut self, app: &mut WordApp, ctx: &egui::Context) {
         wordcraft_agent::ensure(&mut app.session);
+        // The background agent: started on the first question, fed each new one.
+        wordcraft_agent::runner::tick(&mut app.session);
         if let Some((open, tab)) = REQUEST.lock().ok().and_then(|mut r| r.take()) {
             self.open = open;
             self.tab = Tab::parse(&tab);

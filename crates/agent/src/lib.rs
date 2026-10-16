@@ -19,6 +19,8 @@
 #![forbid(unsafe_code)]
 
 pub mod anchor;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod channel;
 pub mod commands;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod cowork;
@@ -27,6 +29,9 @@ pub mod layer;
 pub mod mask;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod mcp;
+pub mod presence;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod runner;
 pub mod sample;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod server;
@@ -61,6 +66,8 @@ pub fn install() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         wordcraft_engine::ext::register_commands(commands::specs());
+        #[cfg(not(target_arch = "wasm32"))]
+        wordcraft_engine::ext::register_commands(runner::specs());
         wordcraft_engine::ext::register_observer(&KEEPER);
     });
 }
@@ -92,6 +99,13 @@ pub struct State {
     doc_id: Option<u64>,
     layer: Arc<Layer>,
     pub render: Option<Render>,
+    /// The connection check out now (never saved).
+    pub ping: Option<presence::Ping>,
+}
+
+/// The session's connection check.
+pub fn ping(s: &Session) -> Option<presence::Ping> {
+    s.ext.get::<State>().and_then(|st| st.ping.clone())
 }
 
 /// Loads the layer of the session's document (again after a new document was opened).
@@ -219,8 +233,14 @@ fn on_template(id: &str) -> bool {
 
 impl Observer for Keeper {
     fn before(&self, s: &mut Session, id: &str, params: &Json) {
+        let flag = |k: &str| params.get(k).and_then(Json::as_bool) == Some(true);
         if id.starts_with("agent.") && params.get("actor").and_then(Json::as_str) == Some("agent") {
-            LAST_AGENT_CALL.store(now_ms(), std::sync::atomic::Ordering::Relaxed);
+            if flag("waiting") {
+                presence::note_wait();
+            } else if !flag("poll") {
+                // A real tool call (not a stream polling, not wait_for_questions looping).
+                LAST_AGENT_CALL.store(now_ms(), std::sync::atomic::Ordering::Relaxed);
+            }
         }
         ensure(s);
         let swapped = if on_template(id) && !commands::in_agent_exec() { template_in(s) } else { None };

@@ -4,6 +4,7 @@
 //! so the client can start before WordCraft does and keeps working across app restarts.
 
 use std::io::{BufRead, Write};
+use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 use wordcraft_mcp::Backend;
@@ -46,8 +47,8 @@ impl Backend for Lazy {
 }
 
 /// Serves newline-delimited JSON-RPC from `input` until it closes. Nothing but protocol goes to
-/// `output`.
-pub fn serve(b: &mut dyn Backend, input: impl BufRead, mut output: impl Write) -> std::io::Result<()> {
+/// `output`; replies and channel events written through it never interleave.
+pub fn serve(b: &mut dyn Backend, input: impl BufRead, output: Arc<Mutex<dyn Write + Send>>) -> std::io::Result<()> {
     for line in input.lines() {
         let line = line?;
         if line.trim().is_empty() {
@@ -58,17 +59,36 @@ pub fn serve(b: &mut dyn Backend, input: impl BufRead, mut output: impl Write) -
             Err(_) => Some(json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": "parse error"}})),
         };
         if let Some(v) = reply {
-            writeln!(output, "{v}")?;
-            output.flush()?;
+            let mut w = match output.lock() {
+                Ok(g) => g,
+                Err(p) => p.into_inner(),
+            };
+            writeln!(w, "{v}")?;
+            w.flush()?;
         }
     }
     Ok(())
 }
 
+/// `--agent-stdio`: serves on stdin/stdout until stdin closes, reaching the app's control channel at
+/// `control`, and passes on the channel events of its agent server on `agent_port` (the "my
+/// session" mode). Returns the exit code.
+pub fn run(control: String, agent_port: u16) -> i32 {
+    let out: Arc<Mutex<dyn Write + Send>> = Arc::new(Mutex::new(std::io::stdout()));
+    let follower = out.clone();
+    let _ = std::thread::Builder::new().name("channel-follow".into()).spawn(move || crate::channel::follow(agent_port, follower));
+    let mut b = Lazy::new(crate::server::control(control));
+    match serve(&mut b, std::io::stdin().lock(), out) {
+        Ok(()) => 0,
+        Err(e) => {
+            let _ = writeln!(std::io::stderr(), "wordcraft --agent-stdio: {e}");
+            1
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use super::*;
 
     #[test]
@@ -83,9 +103,9 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"get_context","arguments":{}}}"#,
         ]
         .join("\n");
-        let mut out = Vec::new();
-        serve(&mut b, input.as_bytes(), &mut out).unwrap();
-        let lines: Vec<Value> = String::from_utf8(out).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        let out = Arc::new(Mutex::new(Vec::new()));
+        serve(&mut b, input.as_bytes(), out.clone()).unwrap();
+        let lines: Vec<Value> = String::from_utf8(out.lock().unwrap().clone()).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
         assert_eq!(lines.len(), 4, "the notification gets no reply");
         assert_eq!(lines[0]["result"]["serverInfo"]["name"], "wordcraft-agent");
         assert!(lines[1]["result"]["tools"].as_array().unwrap().iter().any(|t| t["name"] == "wait_for_questions"));
@@ -101,8 +121,8 @@ mod tests {
         h.session.set_document(wordcraft_doc::Document::from_text("Hello there"));
         h.session.run("agent.ask", &json!({"paragraph": 0, "text": "Why hello?"})).unwrap();
         let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"wait_for_questions","arguments":{"timeout_seconds":0}}}"#;
-        let mut out = Vec::new();
-        serve(&mut h, input.as_bytes(), &mut out).unwrap();
-        assert!(String::from_utf8(out).unwrap().contains("Why hello?"));
+        let out = Arc::new(Mutex::new(Vec::new()));
+        serve(&mut h, input.as_bytes(), out.clone()).unwrap();
+        assert!(String::from_utf8(out.lock().unwrap().clone()).unwrap().contains("Why hello?"));
     }
 }

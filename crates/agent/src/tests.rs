@@ -327,3 +327,36 @@ fn mcp_tools_reach_the_commands() {
     let doc = call(&mut h, "read_document", json!({}));
     assert!(!doc.contains("Hartmann"));
 }
+
+#[test]
+fn a_connection_check_goes_out_like_a_question_but_is_never_one() {
+    let mut s = letter();
+    s.run("agent.ask", &json!({"paragraph": 2, "text": "A real question"})).unwrap();
+    let id = s.run("agent.ping", &json!({})).unwrap()["id"].as_str().unwrap().to_string();
+    // Every agent path sees it, first, with kind ping.
+    let pending = agent(&mut s, "agent.questions", json!({"status": "pending", "waiting": true})).unwrap();
+    assert_eq!(pending[0]["kind"], "ping");
+    assert_eq!(pending[0]["id"], id);
+    assert_eq!(pending.as_array().unwrap().len(), 2);
+    let line = crate::server::event_line(&pending[0]).unwrap();
+    assert_eq!(line["kind"], "ping");
+    // Not a question in the layer: no badge, never saved.
+    let l = crate::layer(&s);
+    assert_eq!(l.questions.len(), 1);
+    assert!(!serde_json::to_string(&*l).unwrap().contains("ping"));
+    // The agent answers it: the check is answered, the real question still waits.
+    agent(&mut s, "agent.claim", json!({"id": id})).unwrap();
+    assert_eq!(crate::ping(&s).unwrap().status(), "working");
+    agent(&mut s, "agent.answer", json!({"id": id, "text": "here"})).unwrap();
+    let p = crate::ping(&s).unwrap();
+    assert!(p.answered_at.is_some());
+    let st = crate::presence::status(Some(&p), &Default::default(), crate::now_ms());
+    assert!(matches!(st, crate::presence::Status::Answering { .. }), "{st:?}");
+    let pending = agent(&mut s, "agent.questions", json!({"status": "pending"})).unwrap();
+    assert_eq!(pending.as_array().unwrap().len(), 1);
+    assert_eq!(pending[0]["text"], "A real question");
+    // The agent can't send a check itself.
+    assert!(agent(&mut s, "agent.ping", json!({})).is_err());
+    // A wait_for_questions poll counts as a listener, and isn't a "tool call".
+    assert!(crate::presence::listeners(false).waiting);
+}

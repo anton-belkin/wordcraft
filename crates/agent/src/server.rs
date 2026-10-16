@@ -146,7 +146,10 @@ fn serve(stream: TcpStream, connect: &Connector) {
         }
         let result = match (req.method.as_str(), req.path.as_str()) {
             ("POST", "/mcp") => post_mcp(&mut w, &req, connect, &mut backend),
-            ("GET", "/mcp") => respond(&mut w, "405 Method Not Allowed", "text/plain", b"POST JSON-RPC messages here"),
+            ("GET", "/mcp") => {
+                channel_stream(w, connect);
+                return;
+            }
             ("DELETE", "/mcp") => respond(&mut w, "200 OK", "text/plain", b""),
             ("GET", "/events") => {
                 events(w, connect);
@@ -162,7 +165,7 @@ fn serve(stream: TcpStream, connect: &Connector) {
     }
 }
 
-const HELP: &str = "WordCraft agent layer\n\nPOST /mcp     MCP (Streamable HTTP)\nGET  /events  one JSON line per new question (for a background monitor)\nGET  /health  ok\n";
+const HELP: &str = "WordCraft agent layer\n\nPOST /mcp     MCP (Streamable HTTP)\nGET  /mcp     questions as channel events (SSE, in the \"my session\" mode)\nGET  /events  one JSON line per new question (for a background monitor)\nGET  /health  ok\n";
 
 fn backend<'a>(slot: &'a mut Option<Box<dyn Backend + Send>>, connect: &Connector) -> Result<&'a mut Box<dyn Backend + Send>, String> {
     if slot.is_none() {
@@ -206,12 +209,18 @@ pub fn event_line(q: &Value) -> Option<Value> {
         "paragraph": q.get("paragraph"),
         "quote": q.get("quote"),
         "question": q.get("text"),
-        "hint": "claim_question, investigate (get_context, read_document), answer_question",
+        "kind": q.get("kind").and_then(Value::as_str).unwrap_or("question"),
+        "hint": if q.get("kind").and_then(Value::as_str) == Some("ping") {
+            "a connection check: answer_question with \"here\" at once"
+        } else {
+            "claim_question, investigate (get_context, read_document), answer_question"
+        },
     }))
 }
 
 /// Streams new pending questions, one JSON object per line, until the client goes away.
 fn events(mut w: TcpStream, connect: &Connector) {
+    let _listening = crate::presence::Listening::new(crate::presence::Stream::Events);
     if w.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n").is_err() {
         return;
     }
@@ -220,7 +229,10 @@ fn events(mut w: TcpStream, connect: &Connector) {
     let mut slot: Option<Box<dyn Backend + Send>> = None;
     loop {
         if let Ok(b) = backend(&mut slot, connect) {
-            match b.call("engine.execute", json!({"command": "agent.questions", "params": {"status": "pending", "actor": "agent", "masked": true}})) {
+            match b.call(
+                "engine.execute",
+                json!({"command": "agent.questions", "params": {"status": "pending", "actor": "agent", "masked": true, "poll": true}}),
+            ) {
                 Ok(Value::Array(list)) => {
                     for q in list {
                         let Some(line) = event_line(&q) else { continue };
@@ -240,6 +252,55 @@ fn events(mut w: TcpStream, connect: &Connector) {
         std::thread::sleep(Duration::from_millis(800));
         if w.peer_addr().is_err() {
             return;
+        }
+    }
+}
+
+/// The `GET /mcp` stream (SSE): in the "my session" mode, each new pending question as a channel
+/// event; questions that wait while the mode is another are sent when it is switched on.
+fn channel_stream(mut w: TcpStream, connect: &Connector) {
+    if w.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n: connected\n\n")
+        .and_then(|()| w.flush())
+        .is_err()
+    {
+        return;
+    }
+    let _listening = crate::presence::Listening::new(crate::presence::Stream::Channel);
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut slot: Option<Box<dyn Backend + Send>> = None;
+    let mut quiet = 0u32;
+    loop {
+        if crate::presence::mode() == crate::presence::Mode::Channel
+            && let Ok(b) = backend(&mut slot, connect)
+        {
+            match b.call(
+                "engine.execute",
+                json!({"command": "agent.questions", "params": {"status": "pending", "actor": "agent", "masked": true, "poll": true}}),
+            ) {
+                Ok(Value::Array(list)) => {
+                    for q in list {
+                        let Some(id) = q.get("id").and_then(Value::as_str).map(str::to_string) else { continue };
+                        if !seen.insert(id) {
+                            continue;
+                        }
+                        let event = format!("event: message\ndata: {}\n\n", crate::channel::notification(&q));
+                        if w.write_all(event.as_bytes()).and_then(|()| w.flush()).is_err() {
+                            return;
+                        }
+                    }
+                }
+                Ok(_) => {}
+                Err(_) => slot = None,
+            }
+        }
+        std::thread::sleep(Duration::from_millis(800));
+        quiet += 1;
+        // A comment now and then notices a client that went away.
+        if quiet >= 20 {
+            quiet = 0;
+            if w.write_all(b": keep-alive\n\n").and_then(|()| w.flush()).is_err() {
+                return;
+            }
         }
     }
 }

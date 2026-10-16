@@ -26,11 +26,7 @@ fn main() {
             _ => {}
         }
     }
-    let mut backend = wordcraft_agent::stdio::Lazy::new(wordcraft_agent::server::control(addr));
-    let stdin = std::io::stdin();
-    if let Err(e) = wordcraft_agent::stdio::serve(&mut backend, stdin.lock(), std::io::stdout()) {
-        let _ = std::io::Write::write_fmt(&mut std::io::stderr(), format_args!("wordcraft-agent-mcp: {e}\n"));
-    }
+    std::process::exit(wordcraft_agent::stdio::run(addr, wordcraft_agent::server::DEFAULT_PORT));
 }
 
 #[cfg(target_arch = "wasm32")]
