@@ -64,6 +64,11 @@ pub enum Op {
         before: Box<(Vec<crate::copyedit::Overlay>, Option<serde_json::Value>)>,
         after: Box<(Vec<crate::copyedit::Overlay>, Option<serde_json::Value>)>,
     },
+    /// The file's context entries, before and after.
+    FileContext {
+        before: Vec<crate::filectx::Entry>,
+        after: Vec<crate::filectx::Entry>,
+    },
     /// The document's context (the Agent tab's Context group), before and after.
     Context {
         before: Option<crate::context::Context>,
@@ -164,6 +169,10 @@ fn undo(s: &mut Session, op: &Op) {
         Op::AddPlace => {}
         Op::Context { before, .. } => set_context(s, before),
         Op::CopyEdits { before, .. } => copy_edits(s, before),
+        Op::FileContext { before, .. } => {
+            let v = before.clone();
+            crate::update(s, |l| l.file_context = v);
+        }
         Op::Proposal { topic, before, question, note, .. } => proposal(s, topic, before, question, note, true),
     }
 }
@@ -199,6 +208,10 @@ fn redo(s: &mut Session, op: &Op) {
         Op::AddPlace => {}
         Op::Context { after, .. } => set_context(s, after),
         Op::CopyEdits { after, .. } => copy_edits(s, after),
+        Op::FileContext { after, .. } => {
+            let v = after.clone();
+            crate::update(s, |l| l.file_context = v);
+        }
         Op::Proposal { topic, after, question, note, .. } => proposal(s, topic, after, question, note, false),
     }
 }

@@ -142,15 +142,18 @@ pub(crate) fn paint(st: &mut AgentUi, app: &WordApp, ui: &Ui, painter: &Painter,
         });
     }
 
-    // Places: the open topic's outlined; every place's marker in the margin.
+    // Places: the open topic's outlined, and the one the caret is in; every place's marker in the
+    // margin.
     let all = topics::resolve(s);
     let time = ui.input(|i| i.time);
     let mut slots: Vec<(usize, f32, f32)> = Vec::new();
     let mut any_working = false;
+    let (ca, cb) = s.sel.ordered();
     for topic in all.iter() {
         let (color, working, unread) = marker_state(app, &topic.id, &t);
         any_working |= working;
-        let open = st.open_topic.as_deref() == Some(topic.id.as_str());
+        let here = topic.places.iter().any(|pl| pl.ranges().any(|(x, y)| *x <= cb && ca <= *y));
+        let open = st.open_topic.as_deref() == Some(topic.id.as_str()) || here;
         for pl in &topic.places {
             // Its repetitions too, in a client's copy (a place inside a template loop).
             for (k, (a, b)) in pl.ranges().enumerate() {
@@ -173,6 +176,9 @@ pub(crate) fn paint(st: &mut AgentUi, app: &WordApp, ui: &Ui, painter: &Painter,
                     continue;
                 }
                 let rect = marker(painter, pos2(x, y), &pl.label, color, working, unread, time, &t);
+                if open {
+                    painter.circle_stroke(rect.center(), rect.width() / 2.0 + 2.5, Stroke::new(1.5, color));
+                }
                 if pl.removed.is_some() {
                     painter.line_segment([rect.left_center(), rect.right_center()], Stroke::new(1.2, Color32::WHITE));
                 }
@@ -189,4 +195,86 @@ pub(crate) fn paint(st: &mut AgentUi, app: &WordApp, ui: &Ui, painter: &Painter,
     if any_working {
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(40));
     }
+    hover_target(app, ui, painter, g, &all, &t);
+}
+
+/// The link the pointer is on in the pane: its target highlighted in the document, without a
+/// click or a change of focus; off screen, a hint at the edge ("↓ §12"); a removed place, the
+/// text it was between.
+fn hover_target(app: &WordApp, ui: &Ui, painter: &Painter, g: &PageGeometry, all: &[topics::RTopic], t: &Tokens) {
+    use wordcraft_agent::links::Target;
+    let Some((target, label)) = crate::hovered_link() else { return };
+    let s = &app.session;
+    let mut ranges: Vec<(wordcraft_doc::Pos, wordcraft_doc::Pos)> = vec![];
+    let mut removed: Vec<(wordcraft_doc::Pos, String)> = vec![];
+    let mut add_place = |pl: &topics::RPlace| {
+        if pl.removed.is_some() {
+            if let Some(a) = &pl.from {
+                removed.push((a.clone(), pl.label.clone()));
+            }
+        } else {
+            ranges.extend(pl.ranges().map(|(a, b)| (a.clone(), b.clone())));
+        }
+    };
+    match &target {
+        Target::Passage(sp) => ranges.push((sp.start_pos(), sp.end_pos())),
+        Target::Place { place, .. } => all.iter().flat_map(|x| x.places.iter()).filter(|p| &p.id == place).for_each(&mut add_place),
+        Target::Topic(tp) | Target::Note { topic: tp, .. } => {
+            all.iter().filter(|x| &x.id == tp).flat_map(|x| x.places.iter()).for_each(&mut add_place)
+        }
+        Target::Url(_) | Target::Gone => return,
+    }
+    let glow = Color32::from_rgba_unmultiplied(0xFF, 0xC8, 0x3D, 90);
+    let mut shown = false;
+    let mut above = false;
+    let mut below = false;
+    for (a, b) in &ranges {
+        for (_, r) in g.range_rects(app, a, b) {
+            if r.intersects(g.clip) {
+                painter.rect_filled(r.expand(1.0), CornerRadius::same(2), glow);
+                shown = true;
+            } else if r.bottom() < g.clip.top() {
+                above = true;
+            } else {
+                below = true;
+            }
+        }
+    }
+    // A removed place: where it was, and the text either side.
+    for (at, lbl) in &removed {
+        let text = wordcraft_agent::anchor::para_text(&s.doc, &at.path).unwrap_or("").replace(wordcraft_doc::para::OBJ, "");
+        let off = wordcraft_agent::anchor::para_text(&s.doc, &at.path)
+            .and_then(|x| x.get(..at.off))
+            .map_or(0, |x| x.replace(wordcraft_doc::para::OBJ, "").len());
+        let before: String =
+            text.get(..off).unwrap_or("").split_whitespace().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join(" ");
+        let after: String = text.get(off..).unwrap_or("").split_whitespace().take(4).collect::<Vec<_>>().join(" ");
+        let note = format!("{lbl} was between “{before}” and “{after}”");
+        if let Some((_, r)) = g.caret_rect(app, at) {
+            if r.intersects(g.clip) {
+                painter.rect_filled(r.expand2(vec2(2.0, 1.0)), CornerRadius::same(1), glow);
+                pill(painter, pos2(r.center().x, r.top() - 6.0), Align2::CENTER_BOTTOM, &note, t);
+                shown = true;
+            } else if r.bottom() < g.clip.top() {
+                above = true;
+            } else {
+                below = true;
+            }
+        }
+    }
+    if !shown && (above || below) {
+        let (y, arrow, align) =
+            if above { (g.clip.top() + 8.0, "↑", Align2::CENTER_TOP) } else { (g.clip.bottom() - 8.0, "↓", Align2::CENTER_BOTTOM) };
+        pill(painter, pos2(g.clip.center().x, y), align, &format!("{arrow} {label}"), t);
+    }
+    let _ = ui;
+}
+
+/// A small label on the page.
+fn pill(painter: &Painter, at: Pos2, align: Align2, text: &str, t: &Tokens) {
+    let galley = painter.layout_no_wrap(text.to_string(), FontId::proportional(11.5), Color32::WHITE);
+    let rect = align.anchor_size(at, galley.size() + vec2(14.0, 6.0));
+    painter.rect_filled(rect, CornerRadius::same(9), Color32::from_rgba_unmultiplied(0x30, 0x30, 0x30, 230));
+    painter.galley(rect.min + vec2(7.0, 3.0), galley, Color32::WHITE);
+    let _ = t;
 }

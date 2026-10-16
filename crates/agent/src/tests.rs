@@ -1057,3 +1057,39 @@ fn a_copy_edit_moves_to_the_template_and_a_changed_template_flags_it() {
     assert!(!template_text(&mut s).contains("give no opinion"));
     assert_eq!(crate::layer(&s).overlays.len(), 1, "back as a copy edit");
 }
+
+// ---------------------------------------------------------------- E: the file's own context
+
+#[test]
+fn the_files_context_reaches_the_agent_everywhere_and_goes_with_the_file() {
+    let mut s = letter();
+    // The agent keeps what it learned about the whole document; the person adds theirs (undoable).
+    let r = agent(
+        &mut s,
+        "agent.fileContextEdit",
+        json!({"op": "add", "title": "Audience", "kind": "audience", "text": "The client's CFO; plain English."}),
+    )
+    .unwrap();
+    let id = r["id"].as_str().unwrap().to_string();
+    s.run("agent.addFileContext", &json!({"title": "House rules", "text": "Payment terms are always 30 days. See §2."})).unwrap();
+    let all = agent(&mut s, "agent.fileContext", json!({})).unwrap();
+    assert_eq!(all["entries"].as_array().unwrap().len(), 2);
+    assert_eq!(all["entries"][0]["by"], "agent");
+    // A short summary with get_context and every question.
+    let ctx = agent(&mut s, "agent.context", json!({})).unwrap();
+    assert!(ctx["fileContext"].as_str().unwrap().contains("Audience (audience): The client's CFO"), "{ctx}");
+    select(&mut s, "payable in advance");
+    s.run("agent.ask", &json!({"text": "Fine?"})).unwrap();
+    let qs = agent(&mut s, "agent.questions", json!({"status": "pending"})).unwrap();
+    assert!(qs[0]["fileContext"].as_str().unwrap().contains("House rules"), "{qs}");
+    // Edited and removed; the person's step undoes.
+    agent(&mut s, "agent.fileContextEdit", json!({"op": "update", "id": id, "text": "The CFO and the board."})).unwrap();
+    s.run("edit.undo", &json!({})).unwrap();
+    s.run("edit.undo", &json!({})).unwrap();
+    let all = agent(&mut s, "agent.fileContext", json!({})).unwrap();
+    assert_eq!(all["entries"].as_array().unwrap().len(), 1, "the person's entry undone, the agent's stays: {all}");
+    // Kept when the document is sent (the discussion isn't).
+    let sent = crate::topic_cmds::for_sending(&crate::layer(&s), false);
+    assert_eq!(sent.file_context.len(), 1);
+    assert!(sent.questions.is_empty());
+}

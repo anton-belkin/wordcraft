@@ -29,9 +29,13 @@ pub(crate) fn show(st: &mut AgentUi, app: &mut WordApp, ui: &mut Ui) {
         .resizable(true)
         .frame(egui::Frame::NONE.fill(t.panel).inner_margin(12))
         .show(ui, |ui| {
+            // The pane reads one point larger than the app's interface.
+            for font in ui.style_mut().text_styles.values_mut() {
+                font.size += 1.0;
+            }
             ui.horizontal(|ui| {
                 crate::sparkle(ui, p.agent, 16.0);
-                ui.label(RichText::new("Your agent").font(theme::semibold(15.0)));
+                ui.label(RichText::new("Your agent").font(theme::semibold(16.0)));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if wordcraft_ui_egui::widgets::icon_button(ui, "close", "Close").clicked() {
                         close = true;
@@ -49,6 +53,18 @@ pub(crate) fn show(st: &mut AgentUi, app: &mut WordApp, ui: &mut Ui) {
                         st.tab = tab;
                     }
                 }
+                // The file's own context, beside the tabs.
+                let n = wordcraft_agent::layer(&app.session).file_context.len();
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let label = if n > 0 { format!("File context ({n})") } else { "File context".to_string() };
+                    if ui
+                        .selectable_label(st.tab == Tab::FileContext, label)
+                        .on_hover_text("What this document is, for whom, house rules, background: what the agent always knows about it")
+                        .clicked()
+                    {
+                        st.tab = Tab::FileContext;
+                    }
+                });
             });
             ui.separator();
             let l = wordcraft_agent::layer(&app.session);
@@ -67,6 +83,9 @@ pub(crate) fn show(st: &mut AgentUi, app: &mut WordApp, ui: &mut Ui) {
                 }
                 Tab::History => {
                     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| history_tab(ui, &l, &t, &p));
+                }
+                Tab::FileContext => {
+                    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| file_context_tab(st, app, ui, &l, &t, &p));
                 }
             }
         });
@@ -142,8 +161,15 @@ fn rich(ui: &mut Ui, app: &WordApp, text: &str, t: &Tokens, color: Color32, acts
                     };
                     if matches!(target, links::Target::Gone) {
                         ui.label(RichText::new(label).color(t.text_disabled).strikethrough());
-                    } else if ui.link(RichText::new(label).color(t.accent_text)).on_hover_text(tip).clicked() {
-                        acts.push(Act::Link(target));
+                    } else {
+                        let r = ui.link(RichText::new(label.clone()).color(t.accent_text));
+                        // Hovering shows the target in the document (no click, no focus change).
+                        if r.hovered() {
+                            crate::hover_link(&target, &label);
+                        }
+                        if r.on_hover_text(tip).clicked() {
+                            acts.push(Act::Link(target));
+                        }
                     }
                 }
             }
@@ -157,8 +183,67 @@ fn chip(ui: &mut Ui, text: &str, color: Color32) {
         .corner_radius(8.0)
         .inner_margin(egui::Margin::symmetric(6, 1))
         .show(ui, |ui| {
-            ui.label(RichText::new(text).color(color).font(theme::semibold(11.0)));
+            ui.label(RichText::new(text).color(color).font(theme::semibold(12.0)));
         });
+}
+
+/// The file's own context: entries (who added each, when), the person adds, edits, removes.
+fn file_context_tab(st: &mut AgentUi, app: &WordApp, ui: &mut Ui, l: &Layer, t: &Tokens, p: &Palette) {
+    let mut acts = vec![];
+    ui.label(RichText::new("About the whole document: what it is, for whom, house rules, background. The agent always has it; it stays in the file and goes with it when sent.").color(t.text_dim).size(12.0));
+    ui.add_space(6.0);
+    for e in &l.file_context {
+        egui::Frame::NONE.fill(t.input).corner_radius(6.0).inner_margin(8).stroke(egui::Stroke::new(1.0, t.border)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            let editing = st.fc_edit.as_ref().is_some_and(|(id, ..)| id == &e.id);
+            if editing {
+                if let Some((_, title, text)) = st.fc_edit.as_mut() {
+                    ui.add(egui::TextEdit::singleline(title).desired_width(f32::INFINITY));
+                    ui.add(egui::TextEdit::multiline(text).desired_rows(3).desired_width(f32::INFINITY));
+                }
+                ui.horizontal(|ui| {
+                    if ui.button("Save").clicked()
+                        && let Some((id, title, text)) = st.fc_edit.take()
+                    {
+                        acts.push(Act::Run("agent.updateFileContext", json!({"id": id, "title": title, "text": text})));
+                    }
+                    if ui.small_button("Cancel").clicked() {
+                        st.fc_edit = None;
+                    }
+                });
+                return;
+            }
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(&e.title).font(theme::semibold(13.0)));
+                if !e.kind.is_empty() {
+                    chip(ui, &e.kind, p.note);
+                }
+                let who = if e.by == Actor::Agent { "your agent".to_string() } else { e.who.clone() };
+                ui.label(RichText::new(format!("{who} · {}", ago(e.at))).color(t.text_disabled).small());
+            });
+            rich(ui, app, &e.text, t, t.text, &mut acts);
+            ui.horizontal(|ui| {
+                if ui.small_button("Edit").clicked() {
+                    st.fc_edit = Some((e.id.clone(), e.title.clone(), links::plain(&app.session, &e.text)));
+                }
+                if ui.small_button("Remove").clicked() {
+                    acts.push(Act::Run("agent.removeFileContext", json!({"id": e.id})));
+                }
+            });
+        });
+        ui.add_space(4.0);
+    }
+    ui.add_space(6.0);
+    ui.label(RichText::new("Add").color(t.text_dim).small());
+    ui.add(egui::TextEdit::singleline(&mut st.fc_title).hint_text("Title, e.g. Who reads it").desired_width(f32::INFINITY));
+    ui.add(egui::TextEdit::multiline(&mut st.fc_text).hint_text("The context").desired_rows(3).desired_width(f32::INFINITY));
+    let can = !st.fc_title.trim().is_empty() && !st.fc_text.trim().is_empty();
+    if ui.add_enabled(can, egui::Button::new("Add to file context")).clicked() {
+        acts.push(Act::Run("agent.addFileContext", json!({"title": st.fc_title.trim(), "text": st.fc_text.trim()})));
+        st.fc_title.clear();
+        st.fc_text.clear();
+    }
+    st.acts.extend(acts);
 }
 
 /// The agent's proposed changes: the options, Apply option X, Reject (with a comment).
@@ -184,7 +269,7 @@ fn edits(st: &mut AgentUi, app: &WordApp, ui: &mut Ui, topic: &Topic, t: &Tokens
         ProposalState::Outdated => {
             egui::Frame::NONE.fill(tint(p.failed)).corner_radius(6.0).inner_margin(6).show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                ui.label(RichText::new("The agent's proposal is out of date, ask the agent to redo").color(p.failed).font(theme::semibold(11.5)));
+                ui.label(RichText::new("The agent's proposal is out of date, ask the agent to redo").color(p.failed).font(theme::semibold(12.5)));
             });
             return;
         }
@@ -204,7 +289,7 @@ fn edits(st: &mut AgentUi, app: &WordApp, ui: &mut Ui, topic: &Topic, t: &Tokens
             crate::sparkle(ui, p.agent, 12.0);
             let n = opt.steps.len();
             ui.label(
-                RichText::new(format!("The agent proposes {n} change{}", if n == 1 { "" } else { "s" })).color(p.agent).font(theme::semibold(12.0)),
+                RichText::new(format!("The agent proposes {n} change{}", if n == 1 { "" } else { "s" })).color(p.agent).font(theme::semibold(13.0)),
             );
         });
         // The options, side by side: switching changes the preview in the document.
@@ -212,26 +297,26 @@ fn edits(st: &mut AgentUi, app: &WordApp, ui: &mut Ui, topic: &Topic, t: &Tokens
             ui.horizontal_wrapped(|ui| {
                 for o in &e.options {
                     let label = if o.title.is_empty() { format!("Option {}", o.option) } else { format!("{} · {}", o.option, clip(&o.title, 24)) };
-                    if ui.selectable_label(o.option == chosen, RichText::new(label).size(11.5)).clicked() {
+                    if ui.selectable_label(o.option == chosen, RichText::new(label).size(12.5)).clicked() {
                         st.option_of.insert(topic.id.clone(), o.option.clone());
                     }
                 }
             });
         }
         if !opt.title.is_empty() {
-            ui.label(RichText::new(&opt.title).font(theme::semibold(12.0)));
+            ui.label(RichText::new(&opt.title).font(theme::semibold(13.0)));
         }
         if !opt.why.is_empty() {
             rich(ui, app, &opt.why, t, t.text_dim, acts);
         }
         for step in &opt.steps {
-            ui.label(RichText::new(format!("• {}", clip(&step.summary, 140))).size(11.5).color(t.text));
+            ui.label(RichText::new(format!("• {}", clip(&step.summary, 140))).size(12.5).color(t.text));
         }
         let previewing =
             wordcraft_agent::render_state(&app.session).and_then(|r| r.proposal.clone()).is_some_and(|(tp, o)| tp == topic.id && o == chosen);
         let mut show = !st.no_preview;
         if ui
-            .checkbox(&mut show, RichText::new(if previewing { "Shown in the document (read only)" } else { "Show in the document" }).size(11.0))
+            .checkbox(&mut show, RichText::new(if previewing { "Shown in the document (read only)" } else { "Show in the document" }).size(12.0))
             .changed()
         {
             st.no_preview = !show;
@@ -316,14 +401,17 @@ fn selection_tab(st: &mut AgentUi, app: &mut WordApp, ui: &mut Ui, l: &Layer, al
 #[allow(clippy::too_many_arguments)]
 fn topic_card(st: &mut AgentUi, app: &WordApp, ui: &mut Ui, l: &Layer, rt: &RTopic, topic: &Topic, t: &Tokens, p: &Palette, acts: &mut Vec<Act>) {
     let color = status_color(topic.status.kind, p, t);
-    let open = st.open_topic.as_deref() == Some(topic.id.as_str());
-    let stroke = if open { egui::Stroke::new(1.5, color) } else { egui::Stroke::new(1.0, t.border) };
+    // The topic open from a marker or a link, or the one the caret is in: highlighted.
+    let (a, b) = app.session.sel.ordered();
+    let here = rt.places.iter().any(|pl| pl.ranges().any(|(x, y)| *x <= b && a <= *y));
+    let open = st.open_topic.as_deref() == Some(topic.id.as_str()) || here;
+    let stroke = if open { egui::Stroke::new(2.0, color) } else { egui::Stroke::new(1.0, t.border) };
     egui::Frame::NONE.fill(t.input).corner_radius(6.0).inner_margin(10).stroke(stroke).show(ui, |ui| {
         ui.set_width(ui.available_width());
         // Number and status.
         ui.horizontal(|ui| {
             number(ui, app, &topic.id, rt.number, t);
-            ui.label(RichText::new(format!("Topic {}", rt.number)).font(theme::semibold(13.0)));
+            ui.label(RichText::new(format!("Topic {}", rt.number)).font(theme::semibold(14.0)));
             chip(ui, topic.status.kind.label(), color);
             if topic.status.set {
                 let who = if topic.status.by == Actor::Agent { "agent".to_string() } else { topic.status.who.clone() };
@@ -338,7 +426,7 @@ fn topic_card(st: &mut AgentUi, app: &WordApp, ui: &mut Ui, l: &Layer, rt: &RTop
             for k in StatusKind::ALL {
                 let c = status_color(k, p, t);
                 let on = topic.status.kind == k && topic.status.set;
-                let b = egui::Button::new(RichText::new(k.label()).color(if on { Color32::WHITE } else { c }).size(11.0))
+                let b = egui::Button::new(RichText::new(k.label()).color(if on { Color32::WHITE } else { c }).size(12.0))
                     .fill(if on { c } else { Color32::TRANSPARENT })
                     .stroke(egui::Stroke::new(1.0, c))
                     .corner_radius(8.0);
@@ -354,7 +442,7 @@ fn topic_card(st: &mut AgentUi, app: &WordApp, ui: &mut Ui, l: &Layer, rt: &RTop
             egui::TextEdit::singleline(draft)
                 .hint_text("status in a sentence, then pick the status")
                 .desired_width(f32::INFINITY)
-                .font(theme::regular(11.5)),
+                .font(theme::regular(12.5)),
         );
         // The agent's proposal.
         if let Some(pr) = &topic.proposal {
@@ -364,7 +452,7 @@ fn topic_card(st: &mut AgentUi, app: &WordApp, ui: &mut Ui, l: &Layer, rt: &RTop
                 .inner_margin(6)
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.label(RichText::new("Agent suggests: Agreed").color(p.answered).font(theme::semibold(11.5)));
+                    ui.label(RichText::new("Agent suggests: Agreed").color(p.answered).font(theme::semibold(12.5)));
                     rich(ui, app, &pr.reasons, t, t.text, acts);
                     ui.horizontal(|ui| {
                         if ui.button("Confirm Agreed").clicked() {
@@ -382,7 +470,7 @@ fn topic_card(st: &mut AgentUi, app: &WordApp, ui: &mut Ui, l: &Layer, rt: &RTop
         ui.label(RichText::new("Places").color(t.text_dim).small());
         for pl in &rt.places {
             ui.horizontal_wrapped(|ui| {
-                let label = RichText::new(&pl.label).color(t.accent_text).font(theme::semibold(11.5));
+                let label = RichText::new(&pl.label).color(t.accent_text).font(theme::semibold(12.5));
                 if ui.link(label).on_hover_text("Show it").clicked()
                     && let (Some(a), Some(b)) = (&pl.from, &pl.to)
                 {
@@ -421,7 +509,7 @@ fn topic_card(st: &mut AgentUi, app: &WordApp, ui: &mut Ui, l: &Layer, rt: &RTop
             let (icon, kind) = crate::kind_label(&n.kind);
             let title = if n.title.is_empty() { kind.to_string() } else { n.title.clone() };
             let pin = if n.pinned { "● " } else { "" };
-            let head = RichText::new(format!("{pin}{icon}  {title}")).color(p.note).font(theme::semibold(11.5));
+            let head = RichText::new(format!("{pin}{icon}  {title}")).color(p.note).font(theme::semibold(12.5));
             let want_open = st.open_note.as_deref() == Some(n.id.as_str());
             egui::CollapsingHeader::new(head)
                 .id_salt(("agent_note", n.id.as_str()))
@@ -462,7 +550,7 @@ fn topic_card(st: &mut AgentUi, app: &WordApp, ui: &mut Ui, l: &Layer, rt: &RTop
             ui.add_space(4.0);
             let unread = qs.iter().filter(|q| q.status == QuestionStatus::Answered && !q.seen).count();
             let head = if unread > 0 { format!("Discussion ({}) · {unread} new", qs.len()) } else { format!("Discussion ({})", qs.len()) };
-            let r = egui::CollapsingHeader::new(RichText::new(head).color(t.text_dim).font(theme::semibold(11.5)))
+            let r = egui::CollapsingHeader::new(RichText::new(head).color(t.text_dim).font(theme::semibold(12.5)))
                 .id_salt(("agent_discussion", topic.id.as_str()))
                 .default_open(!topic.status.set || unread > 0)
                 .show(ui, |ui| {
@@ -471,7 +559,7 @@ fn topic_card(st: &mut AgentUi, app: &WordApp, ui: &mut Ui, l: &Layer, rt: &RTop
                             ui.label(
                                 RichText::new(if q.asked_by.is_empty() { "You".to_string() } else { q.asked_by.clone() })
                                     .color(p.person)
-                                    .font(theme::semibold(11.0)),
+                                    .font(theme::semibold(12.0)),
                             );
                             ui.label(RichText::new(ago(q.asked_at)).color(t.text_disabled).small());
                             match q.status {
@@ -500,7 +588,7 @@ fn topic_card(st: &mut AgentUi, app: &WordApp, ui: &mut Ui, l: &Layer, rt: &RTop
                         if let Some(a) = &q.answer {
                             ui.horizontal(|ui| {
                                 crate::sparkle(ui, p.agent, 11.0);
-                                ui.label(RichText::new("Your agent").color(p.agent).font(theme::semibold(11.0)));
+                                ui.label(RichText::new("Your agent").color(p.agent).font(theme::semibold(12.0)));
                             });
                             rich(ui, app, &a.text, t, t.text, acts);
                             for k in &a.links {
@@ -569,7 +657,7 @@ fn ask_box(st: &mut AgentUi, app: &mut WordApp, ui: &mut Ui, t: &Tokens, p: &Pal
             st.new_topic = false;
         }
         if topic_here.is_some() {
-            ui.checkbox(&mut st.new_topic, RichText::new("New topic").size(11.5)).on_hover_text("Start a separate topic on this selection");
+            ui.checkbox(&mut st.new_topic, RichText::new("New topic").size(12.5)).on_hover_text("Start a separate topic on this selection");
         }
         ui.label(RichText::new(if cfg!(target_os = "macos") { "Cmd+Enter" } else { "Ctrl+Enter" }).color(t.text_disabled).small());
     });
@@ -593,7 +681,7 @@ fn ask_box(st: &mut AgentUi, app: &mut WordApp, ui: &mut Ui, t: &Tokens, p: &Pal
 
 fn overview_tab(st: &mut AgentUi, app: &mut WordApp, ui: &mut Ui, l: &Layer, all: &[RTopic], t: &Tokens, p: &Palette) {
     let so = wordcraft_agent::topic_cmds::sign_off(&app.session);
-    ui.label(RichText::new(so["line"].as_str().unwrap_or("")).font(theme::semibold(14.0)));
+    ui.label(RichText::new(so["line"].as_str().unwrap_or("")).font(theme::semibold(15.0)));
     ui.label(RichText::new("Readiness for sign-off").color(t.text_dim).small());
     ui.add_space(4.0);
     ui.horizontal_wrapped(|ui| {
@@ -681,7 +769,7 @@ fn history_tab(ui: &mut Ui, l: &Layer, t: &Tokens, p: &Palette) {
             Actor::Human => (if e.who.is_empty() { "Person".to_string() } else { e.who.clone() }, p.person),
         };
         ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new(who).color(color).font(theme::semibold(11.5)));
+            ui.label(RichText::new(who).color(color).font(theme::semibold(12.5)));
             ui.label(RichText::new(e.kind.as_str()).color(t.text_disabled).small());
             ui.label(RichText::new(ago(e.at)).color(t.text_disabled).small());
         });

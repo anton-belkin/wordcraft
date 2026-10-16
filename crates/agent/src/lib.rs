@@ -29,6 +29,7 @@ pub mod copyedit;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod cowork;
 pub mod crm;
+pub mod filectx;
 pub mod layer;
 pub mod links;
 pub mod mask;
@@ -84,6 +85,7 @@ pub fn install() {
         wordcraft_engine::ext::register_commands(context::specs());
         wordcraft_engine::ext::register_commands(proposals::specs());
         wordcraft_engine::ext::register_commands(copyedit::specs());
+        wordcraft_engine::ext::register_commands(filectx::specs());
         wordcraft_engine::ext::register_observer(&KEEPER);
     });
 }

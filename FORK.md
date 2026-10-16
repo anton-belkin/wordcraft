@@ -111,6 +111,17 @@ upstream. Each one accepted upstream removes its lines from the patch.
   `/events` or channel stream connected, a `wait_for_questions` poll in the last minute (its calls
   carry `waiting`, so HTTP and stdio count alike), the background agent running. Stream polls carry
   `poll`, so neither counts as the agent's last tool call.
+- **The pane and topics** (the same in GridCraft and DeckCraft): the caret (or a selection) inside
+  a place highlights its topic: its markers get a ring, its places an outline, its card a bold
+  border. The pane reads one point larger. **File context** (`filectx.rs`, a button beside the
+  pane's tabs): entries about the document as a whole (what it is, for whom, house rules,
+  background, facts), with who added each and when; the person adds, edits and removes them
+  (undo steps). Kept in the file's agent layer and kept when it is sent. MCP: `get_file_context
+  {document}`, `add_file_context {document, title, kind, text}` → id, `update_file_context
+  {document, id, title?, text?}`, `remove_file_context {document, id}`; `get_context` and every
+  question carry a short summary (`fileContext`). Hovering a link in the pane highlights its
+  target in the document without a click or a change of focus; a target off screen gets an edge
+  hint ("↓ §12"), a removed place the text it was between.
 - **Proposals instead of direct edits** (`proposals.rs`; the same MCP surface in GridCraft and
   DeckCraft): `run_command {…, topic, option?}` doesn't change the document: it runs on the
   topic's draft (the document with the option's earlier commands replayed on a scratch session,

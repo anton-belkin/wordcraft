@@ -69,6 +69,47 @@ pub(crate) fn server_url() -> Option<&'static str> {
 
 static REQUEST: Mutex<Option<(bool, String)>> = Mutex::new(None);
 
+/// The link the pointer is on in the pane, this frame (its target and label).
+static HOVER: Mutex<Option<(wordcraft_agent::links::Target, String)>> = Mutex::new(None);
+
+pub(crate) fn hover_link(target: &wordcraft_agent::links::Target, label: &str) {
+    if let Ok(mut g) = HOVER.lock() {
+        *g = Some((target.clone(), label.to_string()));
+    }
+}
+
+/// A hover held by a script (snapshots): `[label](href)`, until the next request.
+static HELD_HOVER: Mutex<Option<(String, String)>> = Mutex::new(None);
+
+/// The link hovered last frame (cleared once read by the page overlay).
+pub(crate) fn hovered_link() -> Option<(wordcraft_agent::links::Target, String)> {
+    HOVER.lock().ok().and_then(|mut g| g.take())
+}
+
+/// A held hover's target, in this session.
+fn held_hover(s: &Session) -> Option<(wordcraft_agent::links::Target, String)> {
+    let (href, label) = HELD_HOVER.lock().ok()?.clone()?;
+    use wordcraft_agent::links::Target;
+    // As the agent writes them: `para:12`, `place:3.2`.
+    if let Some(n) = href.strip_prefix("para:").and_then(|n| n.parse::<usize>().ok()) {
+        let paras = anchor::paragraphs(&s.doc);
+        let path = paras.get(n)?.clone();
+        let len = anchor::para_text(&s.doc, &path).map_or(0, str::len);
+        return Some((Target::Passage(Span { para: n, path, start: 0, end: len }), label));
+    }
+    if let Some(lbl) = href.strip_prefix("place:")
+        && let Some(id) = wordcraft_agent::topics::find_place(s, lbl)
+    {
+        let topic = wordcraft_agent::layer(s).place(&id).map(|(t, _)| t.id.clone()).unwrap_or_default();
+        return Some((Target::Place { topic, place: id }, label));
+    }
+    let segs = wordcraft_agent::links::render(s, &format!("[{label}]({href})"));
+    segs.into_iter().find_map(|x| match x {
+        wordcraft_agent::links::Seg::Link { label, target } => Some((target, label)),
+        _ => None,
+    })
+}
+
 /// Opens (or closes) the Agent pane on a tab (`selection`, `overview`, `history`; `selection:3`
 /// with topic 3 open; `ask:<question>` asks on the selection) from the next frame (for scripts and
 /// snapshots).
@@ -84,12 +125,15 @@ pub(crate) enum Tab {
     Selection,
     Overview,
     History,
+    /// The file's own context (a button beside the tabs).
+    FileContext,
 }
 
 impl Tab {
     fn parse(s: &str) -> Tab {
         match s {
             "overview" | "questions" | "notes" => Tab::Overview,
+            "file" | "context" | "filecontext" => Tab::FileContext,
             "history" => Tab::History,
             _ => Tab::Selection,
         }
@@ -137,6 +181,10 @@ pub(crate) struct AgentUi {
     pub new_topic: bool,
     /// Where the last question asked on a client's copy went in the template.
     pub asked_where: Option<String>,
+    /// File context: the entry being edited (id, title, text) and the add form.
+    pub fc_edit: Option<(String, String, String)>,
+    pub fc_title: String,
+    pub fc_text: String,
     /// The option shown per topic's proposal (else its first).
     pub option_of: std::collections::HashMap<String, String>,
     /// Reject's comment box, open for this topic.
@@ -523,7 +571,13 @@ impl UiExtension for AgentUi {
             self.open = open;
             self.tab = Tab::parse(tab.split(':').next().unwrap_or(""));
             // `ask:<question>`: asked on the selection, as the box's Ask button does.
-            if let Some(rest) = tab.strip_prefix("option:") {
+            if let Some(rest) = tab.strip_prefix("hover:") {
+                // `hover:para:24|§24`: as if the pointer were on such a link in the pane.
+                let (href, label) = rest.split_once('|').unwrap_or((rest, rest));
+                if let Ok(mut g) = HELD_HOVER.lock() {
+                    *g = (!href.is_empty()).then(|| (href.to_string(), label.to_string()));
+                }
+            } else if let Some(rest) = tab.strip_prefix("option:") {
                 // `option:3:B`: topic 3 open, its proposal's option B shown.
                 self.tab = Tab::Selection;
                 if let Some((n, o)) = rest.split_once(':')
@@ -541,6 +595,9 @@ impl UiExtension for AgentUi {
         }
         self.act(app, ctx);
         self.sync_preview(app);
+        if let Some((t, l)) = held_hover(&app.session) {
+            hover_link(&t, &l);
+        }
         #[cfg(not(target_arch = "wasm32"))]
         {
             self.voice.frame(app, ctx);

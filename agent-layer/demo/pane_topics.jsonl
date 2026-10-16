@@ -1,0 +1,32 @@
+{"start": "demo", "width": 1440, "height": 900}
+{"cmd": "select.text", "params": {"text": "payable within 30 days"}}
+{"cmd": "agent.ask", "params": {"text": "Is 30 days standard?"}}
+{"cmd": "agent.claim", "params": {"id": "$last", "actor": "agent"}}
+{"cmd": "agent.answer", "params": {"id": "$last", "actor": "agent", "text": "Yes. It fits the notice period in [§20](para:20) and the retention rule in [§21](para:21)."}}
+{"cmd": "select.text", "params": {"text": "three months"}}
+{"cmd": "agent.ask", "params": {"text": "Why three months?"}}
+{"cmd": "agent.fileContextEdit", "params": {"actor": "agent", "op": "add", "title": "Audience", "kind": "audience", "text": "The client's CFO; plain English, no legalese."}}
+{"cmd": "agent.addFileContext", "params": {"title": "House rules", "kind": "rules", "text": "Payment terms are 30 days unless the partner agrees otherwise. Fees in the client's currency."}}
+{"cmd": "select.text", "params": {"text": "within 30"}}
+{"cmd": "caret.right", "params": {}}
+{"pane": "selection"}
+{"steps": 8}
+{"shot": "SHOTS/e1-caret-in-place.png"}
+{"pane": "file"}
+{"steps": 8}
+{"shot": "SHOTS/e2-file-context.png"}
+{"pane": "selection:1"}
+{"cmd": "select.text", "params": {"text": "within 30"}}
+{"cmd": "caret.right", "params": {}}
+{"cmd": "caret.docStart", "params": {}}
+{"pane": "hover:para:21|§21"}
+{"steps": 8}
+{"shot": "SHOTS/e3-hover-offscreen.png"}
+{"cmd": "select.text", "params": {"text": "three months"}}
+{"cmd": "text.delete", "params": {}}
+{"pane": "hover:place:2|2"}
+{"steps": 8}
+{"shot": "SHOTS/e4-hover-removed-place.png"}
+{"pane": "hover:para:13|§13"}
+{"steps": 8}
+{"shot": "SHOTS/e5-hover-passage.png"}

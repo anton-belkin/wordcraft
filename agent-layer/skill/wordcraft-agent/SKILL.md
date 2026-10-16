@@ -77,6 +77,14 @@ discussion. `list_topics` and `get_topic` show them; questions carry their topic
 - **Never mark Agreed: propose it** (`propose_agreed` with your reasons); you may set open, revise or info with `set_status`.
 - A question with status `withdrawn` was taken back by the person (undo): drop it.
 
+## The file's own context
+
+`get_context` and every question carry `fileContext`, a summary of what the person (or you) noted
+about the document as a whole: what it is, for whom, house rules, background, facts. Read it all
+with `get_file_context`. When you learn something that matters for the whole document (not one
+place), keep it there: `add_file_context {title, kind, text}` (`update_file_context`,
+`remove_file_context`). It stays in the file and goes with it when it is sent.
+
 ## Proposals: change a topic by proposing
 
 - In a topic, never change the document directly: `run_command` with `topic` records the change in

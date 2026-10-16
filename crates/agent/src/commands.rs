@@ -347,6 +347,7 @@ fn context(s: &mut Session, v: &Json) -> CmdResult {
         "privacyNote": "Text marked as client data reads as {{placeholder}} everywhere you look, and you can't write into it. Refer to it by its placeholder; never try to find the real value.",
         "template": if template { crate::crm::vocabulary() } else { Json::Null },
         "preview": if crate::render_state(s).is_some() { json!("the reader is looking at the template rendered for a client; you see and edit the template") } else { Json::Null },
+        "fileContext": crate::filectx::summary(&l),
         "openQuestions": l.questions.iter().filter(|q| q.status.is_open()).count(),
         "notes": l.notes.len(),
         "history": l.log.iter().rev().take(20).collect::<Vec<_>>(),
@@ -414,6 +415,10 @@ fn question_json(s: &Session, view: &View, q: &Question) -> Json {
             a.insert("text".into(), json!(crate::links::for_agent(s, &t)));
         }
         m.remove("error");
+        // The file's own context, in short: always at hand.
+        if let Some(fc) = crate::filectx::summary(&crate::layer(s)) {
+            m.insert("fileContext".into(), json!(fc));
+        }
         // Proposals not yet applied on the same paragraphs: take them into account.
         let paras: Vec<u64> = {
             let mut v: Vec<u64> = vec![];

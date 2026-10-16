@@ -167,6 +167,28 @@ pub fn tools() -> Vec<Value> {
         ),
         tool("get_layer", "The whole agent layer: questions, notes, client-data placeholders, history.", json!({}), &[], true),
         tool(
+            "get_file_context",
+            "The file's own context: what the document is, for whom, house rules, background, facts gathered. get_context and every question carry a short summary of it.",
+            json!({}),
+            &[],
+            true,
+        ),
+        tool(
+            "add_file_context",
+            "Add to the file's own context (kept in the file, kept when it is sent): something about the document as a whole, not a place. Returns its id.",
+            json!({"title": s("A few words"), "kind": s("about, audience, rules, background, fact…"), "text": s("The context (links inside)")}),
+            &["title", "text"],
+            false,
+        ),
+        tool(
+            "update_file_context",
+            "Change an entry of the file's context.",
+            json!({"id": s("Entry id"), "title": s("New title"), "kind": s("New kind"), "text": s("New text")}),
+            &["id"],
+            false,
+        ),
+        tool("remove_file_context", "Remove an entry of the file's context.", json!({"id": s("Entry id")}), &["id"], false),
+        tool(
             "describe_option",
             "Name an option of a topic's proposal and say why: the person sees the title and the why beside its changes.",
             json!({"topic": s("Topic id or number"), "option": s("A, B, C…"), "title": s("A few words"), "why": s("Why this option (links inside)")}),
@@ -274,6 +296,22 @@ pub fn call(b: &mut dyn Backend, name: &str, args: &Value) -> Result<Value, Stri
         "get_layer" => exec_with(b, "agent.layer", json!({}), args),
         "run_command" => exec_with(b, "agent.exec", pick(args, &["command", "params", "at", "reason", "source", "topic", "option"]), args),
         "describe_option" => exec_with(b, "agent.describeOption", pick(args, &["topic", "option", "title", "why"]), args),
+        "get_file_context" => exec_with(b, "agent.fileContext", json!({}), args),
+        "add_file_context" => {
+            let mut p = pick(args, &["title", "kind", "text"]);
+            p["op"] = json!("add");
+            exec_with(b, "agent.fileContextEdit", p, args)
+        }
+        "update_file_context" => {
+            let mut p = pick(args, &["id", "title", "kind", "text"]);
+            p["op"] = json!("update");
+            exec_with(b, "agent.fileContextEdit", p, args)
+        }
+        "remove_file_context" => {
+            let mut p = pick(args, &["id"]);
+            p["op"] = json!("remove");
+            exec_with(b, "agent.fileContextEdit", p, args)
+        }
         "discard_proposal" => exec_with(b, "agent.discardProposal", pick(args, &["topic", "option"]), args),
         "list_commands" => {
             let all = b.call("engine.commands", json!({}))?;
