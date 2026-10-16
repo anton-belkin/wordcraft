@@ -1,0 +1,11 @@
+{"start": "demo", "width": 1440, "height": 900}
+{"cmd": "ui.tab", "params": {"tab": "Agent"}}
+{"cmd": "agent.setContext", "params": {"kind": "cowork"}}
+{"cmd": "agent.attach", "params": {"label": "Cowork · Acme"}}
+{"cmd": "select.text", "params": {"text": "three months"}}
+{"cmd": "agent.ask", "params": {"text": "Is three months usual?"}}
+{"cmd": "select.text", "params": {"text": "payable within 30 days"}}
+{"cmd": "agent.ask", "params": {"text": "Is 30 days standard?"}}
+{"cmd": "agent.claim", "params": {"id": "$last", "actor": "agent"}}
+{"steps": 6}
+{"shot": "SHOTS/w1-working.png"}

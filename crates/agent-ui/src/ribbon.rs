@@ -139,6 +139,8 @@ pub(crate) fn show(st: &mut AgentUi, app: &mut WordApp, ui: &mut Ui) {
     let open = st.open;
     let mut acts: Vec<Act> = Vec::new();
 
+    // The agent at work: the same blue pulse as the Context lamp.
+    let pulse = working(app, &context::of(&app.session)).is_some().then(|| lamp_color(Lamp::Working, ui.ctx(), &t));
     group(ui, "Agent", None, app, |ui, app| {
         let r = big(
             ui,
@@ -147,7 +149,14 @@ pub(crate) fn show(st: &mut AgentUi, app: &mut WordApp, ui: &mut Ui) {
             open,
             true,
             "Show or hide the Agent pane: your questions, the agent's answers and notes",
-            |pa, rect, _| sparkle(pa, rect, p.agent),
+            |pa, rect, _| {
+                sparkle(pa, rect, p.agent);
+                if let Some(c) = pulse {
+                    let d = pos2(rect.max.x - 2.0, rect.max.y - 3.0);
+                    pa.circle_filled(d, 6.0, c.gamma_multiply(0.3));
+                    pa.circle_filled(d, 3.8, c);
+                }
+            },
         );
         if r.clicked() {
             if open {
@@ -414,6 +423,8 @@ fn scripted(ui: &Ui, name: &str, r: &Response) {
 /// The Ready lamp.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Lamp {
+    /// The agent works on a question or a proposal of this document.
+    Working,
     Ready,
     Waiting,
     NotReady,
@@ -422,6 +433,7 @@ pub(crate) enum Lamp {
 impl Lamp {
     fn label(self) -> &'static str {
         match self {
+            Lamp::Working => "Working…",
             Lamp::Ready => "Ready",
             Lamp::Waiting => "Waiting",
             Lamp::NotReady => "Not ready",
@@ -429,11 +441,64 @@ impl Lamp {
     }
     fn color(self, t: &Tokens) -> Color32 {
         match self {
+            // The blue of a topic's marker while the agent works on it.
+            Lamp::Working => palette(t).working,
             Lamp::Ready => Color32::from_rgb(0x2E, 0x9E, 0x4F),
             Lamp::Waiting => Color32::from_rgb(0xE0, 0x9B, 0x1A),
             Lamp::NotReady => t.text_disabled,
         }
     }
+}
+
+/// The lamp's colour now: Working pulses (and asks for the next frame at about 30 fps).
+fn lamp_color(lamp: Lamp, ctx: &egui::Context, t: &Tokens) -> Color32 {
+    let c = lamp.color(t);
+    if lamp != Lamp::Working {
+        return c;
+    }
+    ctx.request_repaint_after(std::time::Duration::from_millis(33));
+    let k = 0.45 + 0.55 * ((ctx.input(|i| i.time) * 3.2).sin() * 0.5 + 0.5) as f32;
+    c.gamma_multiply(k)
+}
+
+/// A claim this old with no call from the agent since is over.
+const WORK_STALE_MS: u64 = 90_000;
+/// Building a proposal counts as working this long after its last step.
+const PROPOSING_MS: u64 = 8_000;
+
+/// Is the agent working on this document: the topics (in order) and who.
+pub(crate) fn working(app: &WordApp, c: &Context) -> Option<(Vec<String>, String)> {
+    let s = &app.session;
+    let now = wordcraft_agent::now_ms();
+    let l = wordcraft_agent::layer(s);
+    let mut topics: Vec<String> = vec![];
+    let claimed: Vec<&wordcraft_agent::layer::Question> = l.questions.iter().filter(|q| q.status == QuestionStatus::Working && !q.hidden).collect();
+    let last = wordcraft_agent::last_agent_call_ms().max(claimed.iter().map(|q| q.asked_at).max().unwrap_or(0));
+    if !claimed.is_empty() && now.saturating_sub(last) < WORK_STALE_MS {
+        topics.extend(claimed.iter().map(|q| q.topic.clone()));
+    }
+    if let Some((t, at)) = wordcraft_agent::proposing(s)
+        && now.saturating_sub(at) < PROPOSING_MS
+    {
+        topics.push(t);
+    }
+    if topics.is_empty() {
+        return None;
+    }
+    let mut seen = vec![];
+    topics.retain(|t| {
+        !t.is_empty() && !seen.contains(t) && {
+            seen.push(t.clone());
+            true
+        }
+    });
+    let who =
+        presence::listeners_of(&wordcraft_agent::document_id(s)).first().map(|x| x.label.clone()).unwrap_or_else(|| match (c.kind, c.background()) {
+            (_, true) => "the background client".to_string(),
+            (Kind::Cowork, _) => "your Cowork chat".to_string(),
+            _ => "your Claude Code session".to_string(),
+        });
+    Some((topics, who))
 }
 
 /// How long "Waiting" lasts after a Get ready step with nobody coming.
@@ -444,6 +509,16 @@ const QUIET_CHECK_MS: u64 = 120_000;
 /// The lamp and what it means (for its tooltip); may ask for a quiet connection check.
 pub(crate) fn lamp(st: &mut AgentUi, app: &WordApp, c: &Context, acts: &mut Vec<Act>) -> (Lamp, String) {
     let now = wordcraft_agent::now_ms();
+    // Working > Ready > Waiting > Not ready.
+    if let Some((topics, who)) = working(app, c) {
+        st.waiting_since = 0;
+        let names: Vec<String> =
+            topics.iter().filter_map(|t| wordcraft_agent::topics::number(&app.session, t)).map(|n| format!("topic {n}")).collect();
+        st.working_topic = (topics.len() == 1).then(|| topics.first().cloned()).flatten();
+        let on = if names.is_empty() { String::new() } else { format!(" on {}", names.join(", ")) };
+        return (Lamp::Working, format!("{who} is working{on}. Click to open it."));
+    }
+    st.working_topic = None;
     if st.waiting_since > 0 && now.saturating_sub(st.waiting_since) > WAIT_MS {
         st.waiting_since = 0;
     }
@@ -687,23 +762,33 @@ fn mode_button(ui: &mut Ui, c: &Context, lamp: Lamp, tip: &str, t: &Tokens) -> R
         Kind::Cowork => "Claude\nCowork",
         Kind::Code => "Claude\nCode",
     };
+    let dot = lamp_color(lamp, ui.ctx(), t);
     big(ui, &format!("{label} ▾"), None, false, true, tip, |pa, rect, col| {
         mode_icon(pa, rect, c.kind, col);
         let d = pos2(rect.max.x - 3.0, rect.max.y - 4.0);
         pa.circle_filled(d, 5.5, t.ribbon);
-        pa.circle_filled(d, 4.2, lamp.color(t));
+        pa.circle_filled(d, 4.2, dot);
     })
 }
 
 /// The lamp: a dot and Ready / Waiting / Not ready.
-fn lamp_row(ui: &mut Ui, lamp: Lamp, tip: &str, extra: Option<&str>, t: &Tokens) {
+fn lamp_row(ui: &mut Ui, lamp: Lamp, tip: &str, extra: Option<&str>, t: &Tokens) -> Response {
     let text = match extra {
         Some(x) => format!("{} · {}", lamp.label(), x),
         None => lamp.label().to_string(),
     };
     let tw = ui.ctx().fonts_mut(|f| f.layout_no_wrap(text.clone(), regular(11.5), t.text).size().x);
-    let (r, resp) = ui.allocate_exact_size(vec2(26.0 + tw, 22.0), Sense::hover());
-    ui.painter().circle_filled(pos2(r.min.x + 12.0, r.center().y), 5.0, lamp.color(t));
+    let sense = if lamp == Lamp::Working { Sense::click() } else { Sense::hover() };
+    let (r, resp) = ui.allocate_exact_size(vec2(26.0 + tw, 22.0), sense);
+    if lamp == Lamp::Working && resp.hovered() {
+        ui.painter().rect_filled(r, CornerRadius::same(4), t.hover);
+    }
+    let color = lamp_color(lamp, ui.ctx(), t);
+    if lamp == Lamp::Working {
+        // A soft halo, breathing with the dot.
+        ui.painter().circle_filled(pos2(r.min.x + 12.0, r.center().y), 8.0, color.gamma_multiply(0.25));
+    }
+    ui.painter().circle_filled(pos2(r.min.x + 12.0, r.center().y), 5.0, color);
     ui.painter().text(
         pos2(r.min.x + 24.0, r.center().y),
         Align2::LEFT_CENTER,
@@ -711,7 +796,7 @@ fn lamp_row(ui: &mut Ui, lamp: Lamp, tip: &str, extra: Option<&str>, t: &Tokens)
         regular(11.5),
         if lamp == Lamp::NotReady { t.text_dim } else { t.text },
     );
-    resp.on_hover_text(tip);
+    resp.on_hover_text(tip)
 }
 
 /// A two-way switch: My session | Project folder.
@@ -792,7 +877,8 @@ fn context_group(st: &mut AgentUi, ui: &mut Ui, app: &mut WordApp, t: &Tokens, a
     }
     let c = context::of(&app.session);
     let (lamp, tip) = lamp(st, app, &c, acts);
-    let steps = steps(st, app, &c, lamp == Lamp::Ready);
+    let steps = steps(st, app, &c, matches!(lamp, Lamp::Ready | Lamp::Working));
+    let working_label = st.working_topic.as_ref().and_then(|tp| wordcraft_agent::topics::number(&app.session, tp)).map(|n| format!("topic {n}"));
 
     if wants_menu("none") {
         egui::Popup::close_all(ui.ctx());
@@ -863,20 +949,32 @@ fn context_group(st: &mut AgentUi, ui: &mut Ui, app: &mut WordApp, t: &Tokens, a
                 {
                     acts.push(Act::Run("agent.setContext", json!({"web": web})));
                 }
-                lamp_row(ui, lamp, &tip, None, t);
+                if lamp_row(ui, lamp, &tip, working_label.as_deref(), t).clicked()
+                    && let Some(tp) = st.working_topic.clone()
+                {
+                    acts.push(Act::Open(Tab::Selection, Some(tp)));
+                }
                 if steps.iter().any(|s| !s.done) {
                     get_ready(st, app, ui, &steps, t, acts);
                 }
             }
             Kind::Cowork => {
-                lamp_row(ui, lamp, &tip, None, t);
+                if lamp_row(ui, lamp, &tip, working_label.as_deref(), t).clicked()
+                    && let Some(tp) = st.working_topic.clone()
+                {
+                    acts.push(Act::Open(Tab::Selection, Some(tp)));
+                }
                 get_ready(st, app, ui, &steps, t, acts);
             }
             Kind::Code => {
                 if let Some(w) = toggle(ui, c.code, t) {
                     acts.push(Act::Run("agent.setContext", json!({"kind": "code", "code": w.id()})));
                 }
-                lamp_row(ui, lamp, &tip, None, t);
+                if lamp_row(ui, lamp, &tip, working_label.as_deref(), t).clicked()
+                    && let Some(tp) = st.working_topic.clone()
+                {
+                    acts.push(Act::Open(Tab::Selection, Some(tp)));
+                }
                 ui.horizontal(|ui| {
                     get_ready(st, app, ui, &steps, t, acts);
                     if c.code == CodeWay::Folder

@@ -185,6 +185,8 @@ pub(crate) struct AgentUi {
     pub fc_edit: Option<(String, String, String)>,
     pub fc_title: String,
     pub fc_text: String,
+    /// The one topic the agent works on now (the Context lamp names it, and opens it on a click).
+    pub working_topic: Option<String>,
     /// The option shown per topic's proposal (else its first).
     pub option_of: std::collections::HashMap<String, String>,
     /// Reject's comment box, open for this topic.
@@ -677,6 +679,32 @@ impl UiExtension for AgentUi {
 mod tests {
     use wordcraft_ui_egui::keytips::{self, Phase};
     use wordcraft_ui_egui::{Services, WordApp};
+
+    #[test]
+    fn the_lamp_is_working_while_a_question_is_claimed_or_a_proposal_is_built() {
+        super::install();
+        let mut app = WordApp::new(wordcraft_engine::Session::new(wordcraft_agent::sample::engagement_letter()), Services::default());
+        let c = wordcraft_agent::context::Context::default();
+        assert!(crate::ribbon::working(&app, &c).is_none());
+        let s = &mut app.session;
+        s.run("select.text", &serde_json::json!({"text": "payable within 30 days"})).unwrap();
+        let q = s.run("agent.ask", &serde_json::json!({"text": "Why?"})).unwrap()["id"].as_str().unwrap().to_string();
+        assert!(crate::ribbon::working(&app, &c).is_none(), "asked, not claimed: not working yet");
+        app.session.run("agent.claim", &serde_json::json!({"id": q, "actor": "agent"})).unwrap();
+        let (topics, _) = crate::ribbon::working(&app, &c).expect("claimed: working");
+        assert_eq!(topics.len(), 1);
+        app.session.run("agent.answer", &serde_json::json!({"id": q, "actor": "agent", "text": "Because."})).unwrap();
+        assert!(crate::ribbon::working(&app, &c).is_none(), "answered: back to Ready");
+        // Building a proposal is working too, for a few seconds after each step.
+        let t = topics[0].clone();
+        app.session
+            .run(
+                "agent.exec",
+                &serde_json::json!({"actor": "agent", "topic": t, "command": "text.insert", "params": {"text": "x"}, "at": {"paragraph": 13, "quote": "payable within 30 days"}, "reason": "r"}),
+            )
+            .unwrap();
+        assert_eq!(crate::ribbon::working(&app, &c).map(|w| w.0), Some(vec![t]));
+    }
 
     #[test]
     fn the_agent_tab_has_a_keytip_and_alt_a_opens_it() {

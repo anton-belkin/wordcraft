@@ -201,6 +201,13 @@ pub struct State {
     pub undo: undo::Log,
     /// Events for the agent (proposals applied, rejected, out of date), numbered (never saved).
     pub events: Vec<(u64, Json)>,
+    /// The topic whose proposal the agent last added to, and when (the Context lamp: Working…).
+    pub proposing: Option<(String, u64)>,
+}
+
+/// The topic whose proposal the agent added to most recently, and when (ms).
+pub fn proposing(s: &Session) -> Option<(String, u64)> {
+    s.ext.get::<State>().filter(|st| st.doc_id == Some(s.document_id())).and_then(|st| st.proposing.clone())
 }
 
 /// The session's connection check.

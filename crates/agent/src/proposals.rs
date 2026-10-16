@@ -218,6 +218,10 @@ pub(crate) fn propose(s: &mut Session, v: &Json, command: &str, params: Json, re
             }
         }
     });
+    // The Context lamp shows the agent working on it.
+    if let Some(st) = s.ext.get_mut::<crate::State>() {
+        st.proposing = Some((topic.clone(), crate::now_ms()));
+    }
     Ok(
         json!({"ok": true, "proposed": true, "topic": topics::number(s, &topic), "option": option, "changes": n, "hint": "the document is unchanged: the person sees the proposal in the topic and applies it there"}),
     )

@@ -186,7 +186,13 @@ upstream. Each one accepted upstream removes its lines from the patch.
   --dangerously-load-development-channels server:aitocraft`); Project folder › Choose folder… (the
   system's chooser; the path is shown; the background client runs there and sees that folder's
   CLAUDE.md, memory and files). The lamp checks by itself and sends the quiet check when something
-  is connected but hasn't said it is here for this document. The context is the document's, saved
+  is connected but hasn't said it is here for this document. A fourth state comes first:
+  **Working…** (blue, pulsing like a topic's marker while the agent works on it, never green):
+  a question of this document is claimed and not answered, or a topic's proposal got a step in
+  the last few seconds; "Working… · topic 3" when it is one topic (a click opens it), the
+  listener named in the tooltip; back to Ready when the answer is written, the claim withdrawn,
+  or nothing happened for 90 s. It repaints at about 30 fps only while working. The Agent button
+  shows the same pulse. The context is the document's, saved
   in its agent layer (`context`), and a person's change is an undo step (`agent.setContext`); a new
   document starts with the last context used in the app (`context.json` in the settings folder). A
   project folder written in a file is used only once chosen on this machine (`folders` in the
