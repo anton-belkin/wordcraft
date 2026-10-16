@@ -111,6 +111,16 @@ upstream. Each one accepted upstream removes its lines from the patch.
   `/events` or channel stream connected, a `wait_for_questions` poll in the last minute (its calls
   carry `waiting`, so HTTP and stdio count alike), the background agent running. Stream polls carry
   `poll`, so neither counts as the agent's last tool call.
+- **The agent's editing reach** (`batch.rs`, `commands::aim`). `run_command` takes every editor
+  command `list_commands` lists (all of them now, refused ones left out, with recipes); `at` is
+  `{paragraph, quote?, occurrence?}`, `through` (and `throughQuote`) for a range over several
+  paragraphs, or `caret: "start" | "end"` for commands that act at a caret (split with
+  `text.newParagraph`, join with `text.delete`, insert tables, breaks, footnotes there).
+  `edit_paragraphs {edits: [{at, text?, style?, list?: {kind, level?, restart?}, insertAfter?}]}`
+  edits several paragraphs in one call and one undo step (or one proposal step): text, styles,
+  real bulleted and numbered lists (the toggles are taken care of), paragraphs added after.
+  `replace_text {find, replace, all?, paragraph?}` replaces in the agent's (masked) view, so
+  client data can't be found or replaced; the engine's own find and replace stay refused.
 - **The pane and topics** (the same in GridCraft and DeckCraft): the caret (or a selection) inside
   a place highlights its topic: its markers get a ring, its places an outline, its card a bold
   border. The pane reads one point larger. **File context** (`filectx.rs`, a button beside the

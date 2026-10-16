@@ -85,7 +85,23 @@ fn scratch(base: &Document, l: &Layer, tracked: bool) -> Session {
 
 /// Finds a step's target again in `view`: where it was if it is still there, else the nearest
 /// match of its quote (or its paragraph's text).
-fn locate(view: &View, at: &Json, para_text: &str) -> Option<Json> {
+pub(crate) fn locate(view: &View, at: &Json, para_text: &str) -> Option<Json> {
+    let mut found = locate_start(view, at, para_text)?;
+    // The rest of `at` goes along: `through` moved as much as the start did.
+    let was = p::u64(at, "paragraph")?;
+    let now = p::u64(&found, "paragraph")?;
+    if let Some(t) = p::u64(at, "through") {
+        found["through"] = json!((t + now).saturating_sub(was).min(view.paras.len().saturating_sub(1) as u64));
+    }
+    for k in ["throughQuote", "caret"] {
+        if let Some(x) = at.get(k) {
+            found[k] = x.clone();
+        }
+    }
+    Some(found)
+}
+
+fn locate_start(view: &View, at: &Json, para_text: &str) -> Option<Json> {
     let para = p::u64(at, "paragraph").map(|n| n.min(usize::MAX as u64) as usize)?;
     let occ = p::u64(at, "occurrence").unwrap_or(0).min(10_000) as usize;
     match p::str(at, "quote").filter(|q| !q.is_empty()) {
@@ -173,6 +189,11 @@ pub(crate) fn propose(s: &mut Session, v: &Json, command: &str, params: Json, re
         let occ = (0..500).take_while(|j| view.find(Some(span.para), Some(q), *j).is_ok_and(|x| x.start < span.start)).count();
         canon["quote"] = json!(q);
         canon["occurrence"] = json!(occ);
+    }
+    for k in ["through", "throughQuote", "caret"] {
+        if let Some(x) = at.get(k) {
+            canon[k] = x.clone();
+        }
     }
     let para_text = view.para(span.para).map(|m| m.text.clone()).unwrap_or_default();
     crate::commands::exec_at(&mut sc, command, params.clone(), &json!({"at": canon, "actor": "agent"}), reason.clone(), source.clone())?;

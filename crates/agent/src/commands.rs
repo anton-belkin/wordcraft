@@ -97,6 +97,31 @@ pub(crate) fn links_p(v: &Json) -> Vec<Link> {
 }
 
 /// `paragraph` / `quote` / `occurrence` params, in the agent's (masked) view.
+/// Where `at` points: `{paragraph?, quote?, occurrence?}`, to the end of paragraph `through` (or
+/// of `throughQuote` in it), or, with `caret` "start" / "end", the caret there (to split a
+/// paragraph, join two, add one before or after).
+pub(crate) fn aim(view: &View, at: &Json) -> Result<Option<(wordcraft_doc::Pos, wordcraft_doc::Pos)>, CmdError> {
+    let Some(sp) = place_in(view, at)? else { return Ok(None) };
+    let (mut a, mut b) = (sp.start_pos(), sp.end_pos());
+    if let Some(t) = p::u64(at, "through").map(|n| n.min(usize::MAX as u64) as usize) {
+        if t < sp.para {
+            return Err(bad("`through` is the last paragraph: not before `paragraph`"));
+        }
+        let m = view.para(t).ok_or_else(|| bad(format!("no paragraph {t} (the document has {})", view.paras.len())))?;
+        b = match p::str(at, "throughQuote").filter(|q| !q.is_empty()) {
+            Some(q) => view.find(Some(t), Some(q), 0).map_err(bad)?.end_pos(),
+            None => wordcraft_doc::Pos::new(StoryRef::Body, m.path.clone(), m.segs.last().map_or(0, |x| x.r.1)),
+        };
+    }
+    match p::str(at, "caret") {
+        None => {}
+        Some("start") => b = a.clone(),
+        Some("end") => a = b.clone(),
+        Some(_) => return Err(bad("`caret` is \"start\" or \"end\"")),
+    }
+    Ok(Some((a, b)))
+}
+
 pub(crate) fn place_in(view: &View, v: &Json) -> Result<Option<Span>, CmdError> {
     let para = p::u64(v, "paragraph").map(|n| n.min(usize::MAX as u64) as usize);
     let quote = p::str(v, "quote");
@@ -809,7 +834,7 @@ fn layer_cmd(s: &mut Session, v: &Json) -> CmdResult {
 
 /// Commands the agent may not run through `agent.exec`: they read text out of the document or
 /// the clipboard, search the real text, touch files, or would undo the reader's work.
-fn refused(id: &str) -> bool {
+pub(crate) fn refused(id: &str) -> bool {
     const PREFIXES: &[&str] = &[
         "agent.",
         "file.",
@@ -895,8 +920,8 @@ pub(crate) fn exec_at(s: &mut Session, command: &str, params: Json, v: &Json, re
     let view = crate::view(s);
     let sel = match v.get("at").filter(|a| a.is_object()) {
         Some(at) => {
-            let span = place_in(&view, at)?.ok_or_else(|| bad("`at` needs `paragraph` and/or `quote`"))?;
-            Selection { anchor: span.start_pos(), focus: span.end_pos() }
+            let (a, b) = aim(&view, at)?.ok_or_else(|| bad("`at` needs `paragraph` and/or `quote`"))?;
+            Selection { anchor: a, focus: b }
         }
         None => s.sel.clone(),
     };

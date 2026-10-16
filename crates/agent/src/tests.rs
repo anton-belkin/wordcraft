@@ -1093,3 +1093,164 @@ fn the_files_context_reaches_the_agent_everywhere_and_goes_with_the_file() {
     assert_eq!(sent.file_context.len(), 1);
     assert!(sent.questions.is_empty());
 }
+
+// ---------------------------------------------------------------- the agent's editing reach
+
+fn paras(s: &Session) -> Vec<String> {
+    crate::anchor::paragraphs(&s.doc).iter().map(|p| crate::anchor::para_text(&s.doc, p).unwrap_or("").replace('\u{FFFC}', "")).collect()
+}
+
+fn numbered(s: &Session, i: usize) -> bool {
+    let p = crate::anchor::paragraphs(&s.doc)[i].clone();
+    s.doc.para(wordcraft_doc::StoryRef::Body, &p).and_then(|x| x.props.numbering).is_some_and(|n| n.num != 0)
+}
+
+#[test]
+fn the_agent_splits_joins_and_spans_paragraphs() {
+    let mut s = letter();
+    let n = paras(&s).len();
+    // Split after a quote (a caret at its end, Enter).
+    agent(
+        &mut s,
+        "agent.exec",
+        json!({"command": "text.newParagraph", "at": {"paragraph": 2, "quote": "fixed", "caret": "end"}, "reason": "two points"}),
+    )
+    .unwrap();
+    assert_eq!(paras(&s).len(), n + 1);
+    assert_eq!(paras(&s)[2], "Our fee is fixed");
+    assert_eq!(paras(&s)[3], " and payable in advance.");
+    // Join it with the next again (Delete at its end).
+    agent(&mut s, "agent.exec", json!({"command": "text.delete", "at": {"paragraph": 2, "caret": "end"}, "reason": "one point"})).unwrap();
+    assert_eq!(paras(&s)[2], "Our fee is fixed and payable in advance.");
+    // A range over several paragraphs.
+    agent(
+        &mut s,
+        "agent.exec",
+        json!({"command": "para.style", "params": {"style": "Heading2"}, "at": {"paragraph": 2, "through": 3}, "reason": "headings"}),
+    )
+    .unwrap();
+    let style = |s: &Session, i: usize| {
+        let p = crate::anchor::paragraphs(&s.doc)[i].clone();
+        s.doc.para(wordcraft_doc::StoryRef::Body, &p).and_then(|x| x.props.style.clone())
+    };
+    assert_eq!(style(&s, 2).as_deref(), Some("Heading2"));
+    assert_eq!(style(&s, 3).as_deref(), Some("Heading2"));
+    assert!(agent(&mut s, "agent.exec", json!({"command": "format.bold", "at": {"paragraph": 3, "through": 2}, "reason": "x"})).is_err());
+}
+
+#[test]
+fn edit_paragraphs_makes_a_real_numbered_list_in_one_undo_step() {
+    let mut s = letter();
+    let before = paras(&s);
+    let r = agent(
+        &mut s,
+        "agent.editParagraphs",
+        json!({"reason": "the terms as a list", "edits": [
+            {"at": {"paragraph": 2}, "text": "The fee is fixed.", "list": {"kind": "number", "restart": true}, "insertAfter": ["It is paid in advance.", "Invoices are in GBP.", "Late payment bears interest."]},
+            {"at": {"paragraph": 0}, "style": "Title"}
+        ]}),
+    )
+    .unwrap();
+    assert_eq!(r["edits"], 2);
+    let now = paras(&s);
+    assert_eq!(&now[2..6], &["The fee is fixed.", "It is paid in advance.", "Invoices are in GBP.", "Late payment bears interest."]);
+    assert!((2..6).all(|i| numbered(&s, i)), "four numbered paragraphs");
+    assert!(!numbered(&s, 6), "the next paragraph isn't in the list");
+    assert_eq!(now[6], before[3]);
+    // One undo step for all of it.
+    s.run("edit.undo", &json!({})).unwrap();
+    assert_eq!(paras(&s), before);
+    // In a topic: a proposal (the document unchanged), applied as one step.
+    let t = topic_on(&mut s, "payable in advance");
+    agent(
+        &mut s,
+        "agent.editParagraphs",
+        json!({"reason": "as a list", "topic": t, "edits": [{"at": {"paragraph": 2}, "list": {"kind": "bullet"}, "insertAfter": ["Second point."]}]}),
+    )
+    .unwrap();
+    assert!(!numbered(&s, 2));
+    s.run("agent.applyProposal", &json!({"topic": t})).unwrap();
+    assert!(numbered(&s, 2) && numbered(&s, 3), "{:?}", paras(&s));
+    assert_eq!(paras(&s)[3], "Second point.");
+}
+
+#[test]
+fn replace_text_finds_what_the_agent_reads_and_never_client_data() {
+    let mut s = letter();
+    mark_secret(&mut s);
+    assert!(
+        agent(&mut s, "agent.replaceText", json!({"find": "in ", "replace": "at ", "reason": "word"})).is_err(),
+        "several matches: say which, or all"
+    );
+    let r =
+        agent(&mut s, "agent.replaceText", json!({"find": "ngagement", "replace": "ngagement (the Work)", "all": true, "reason": "defined term"}))
+            .unwrap();
+    assert_eq!(r["replaced"], 2);
+    assert!(body(&s).contains("Engagement (the Work) letter") && body(&s).contains("The engagement (the Work) ends"));
+    s.run("edit.undo", &json!({})).unwrap();
+    assert!(!body(&s).contains("(the Work)"), "one undo step");
+    // Client data reads as a placeholder: it can't be found, nor replaced.
+    assert!(agent(&mut s, "agent.replaceText", json!({"find": "Hartmann", "replace": "X", "reason": "x"})).is_err());
+    assert!(body(&s).contains(SECRET));
+}
+
+#[test]
+fn tables_are_reachable_cell_by_cell() {
+    let mut s = letter();
+    agent(
+        &mut s,
+        "agent.exec",
+        json!({"command": "insert.table", "params": {"rows": 2, "cols": 2}, "at": {"paragraph": 3, "caret": "end"}, "reason": "a table"}),
+    )
+    .unwrap();
+    let read = agent(&mut s, "agent.read", json!({})).unwrap();
+    let cells: Vec<u64> =
+        read["paragraphs"].as_array().unwrap().iter().filter(|p| p["inTable"] == true).filter_map(|p| p["paragraph"].as_u64()).collect();
+    assert_eq!(cells.len(), 4, "{read}");
+    agent(
+        &mut s,
+        "agent.exec",
+        json!({"command": "text.insert", "params": {"text": "Fee"}, "at": {"paragraph": cells[0], "caret": "start"}, "reason": "header"}),
+    )
+    .unwrap();
+    agent(&mut s, "agent.exec", json!({"command": "table.insertRowBelow", "at": {"paragraph": cells[0]}, "reason": "one more row"})).unwrap();
+    let read = agent(&mut s, "agent.read", json!({})).unwrap();
+    let cells: Vec<u64> =
+        read["paragraphs"].as_array().unwrap().iter().filter(|p| p["inTable"] == true).filter_map(|p| p["paragraph"].as_u64()).collect();
+    assert_eq!(cells.len(), 6);
+    assert!(read.to_string().contains("Fee"));
+    // Two cells of a row merged: a range through both.
+    agent(&mut s, "agent.exec", json!({"command": "table.merge", "at": {"paragraph": cells[4], "through": cells[5]}, "reason": "a total row"}))
+        .unwrap();
+    let read = agent(&mut s, "agent.read", json!({})).unwrap();
+    assert_eq!(read["paragraphs"].as_array().unwrap().iter().filter(|p| p["inTable"] == true).count(), 5);
+}
+
+#[test]
+fn list_commands_shows_everything_run_command_takes_and_how() {
+    let mut h = wordcraft_mcp::Headless::default();
+    h.session = letter();
+    let r = crate::mcp::call(&mut h, "list_commands", &json!({})).unwrap();
+    let all = r["commands"].as_array().unwrap();
+    assert!(all.len() > 350, "all of them, not cut off: {}", all.len());
+    let ids: Vec<&str> = all.iter().filter_map(|c| c["id"].as_str()).collect();
+    for want in [
+        "para.numbering",
+        "para.bullets",
+        "para.listLevel",
+        "para.restartNumbering",
+        "text.newParagraph",
+        "table.merge",
+        "layout.break",
+        "references.footnote",
+        "insert.link",
+    ] {
+        assert!(ids.contains(&want), "{want}");
+    }
+    for refused in ["edit.find", "edit.replace", "edit.paste", "file.open"] {
+        assert!(!ids.contains(&refused), "{refused} is refused, so not listed");
+    }
+    assert!(r["recipes"]["split a paragraph"].as_str().unwrap().contains("caret"));
+    let found = crate::mcp::call(&mut h, "list_commands", &json!({"search": "numbering"})).unwrap();
+    assert!(found["commands"][0]["params"].is_string() || found["commands"][0]["params"].is_null());
+}

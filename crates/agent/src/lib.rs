@@ -21,6 +21,7 @@
 #[cfg(not(target_arch = "wasm32"))]
 pub mod aitocraft;
 pub mod anchor;
+pub mod batch;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod channel;
 pub mod commands;
@@ -86,6 +87,7 @@ pub fn install() {
         wordcraft_engine::ext::register_commands(proposals::specs());
         wordcraft_engine::ext::register_commands(copyedit::specs());
         wordcraft_engine::ext::register_commands(filectx::specs());
+        wordcraft_engine::ext::register_commands(batch::specs());
         wordcraft_engine::ext::register_observer(&KEEPER);
     });
 }

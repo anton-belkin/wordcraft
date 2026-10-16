@@ -13,8 +13,9 @@ The user reviews and signs off on this document; your job is to make that fast. 
 (GET http://127.0.0.1:<port>/events streams one line per new question, or call wait_for_questions), claim_question, \
 investigate with get_context / read_document, then answer_question with links to the paragraphs and sources you used \
 (href \"para:12\", \"note:n3\" or https URLs with a one-line summary). Leave prepared explanations and answers to likely questions \
-with add_note, and log decisions (log_decision). Change the document only with run_command, pointing at text with `at` \
-{paragraph, quote} and giving a reason and a source. PRIVACY: text marked as client data reads as {{placeholder}} in everything \
+with add_note, and log decisions (log_decision). Change the document with run_command (any editor command; list_commands lists them, with recipes), \
+edit_paragraphs (several paragraphs at once: text, styles, real lists, paragraphs added after; one undo step) or replace_text, \
+pointing at text with `at` {paragraph, quote, through?, caret?} and giving a reason and a source. PRIVACY: text marked as client data reads as {{placeholder}} in everything \
 you get (get_context.clientData lists them); refer to it by its placeholder and never try to find the real value. You cannot write \
 into client data. When the document is a template (get_context.template), edit it with placeholders from that vocabulary: the user \
 renders it for a client themselves; you never see a client's values. A question with kind ping is a connection check: answer it at \
@@ -31,6 +32,18 @@ see refs; resolve \"this\", \"that one\", \"это\" from those and the context.
 
 /// Tools that take a `listener` (AItoCraft: a call carrying it keeps the conversation attached).
 const LISTENER_TOOLS: &[&str] = &["list_questions", "wait_for_questions", "claim_question", "answer_question"];
+
+/// `at` as run_command and edit_paragraphs take it.
+fn at_schema() -> Value {
+    json!({"type": "object", "description": "{paragraph, quote?, occurrence?, through?, throughQuote?, caret?}: the text to act on", "properties": {
+        "paragraph": para(),
+        "quote": quote(),
+        "occurrence": n("Which match of the quote in the paragraph (0-based)"),
+        "through": n("The last paragraph, for a range over several (to its end)"),
+        "throughQuote": s("With through: end at the end of this quote in that paragraph"),
+        "caret": {"type": "string", "enum": ["start", "end"], "description": "A caret at the start or end of it, not a selection"}
+    }})
+}
 
 fn tool(name: &str, desc: &str, mut props: Value, required: &[&str], read_only: bool) -> Value {
     // Every tool may name the document (an AItoCraft registry id); without it, the open one.
@@ -167,6 +180,20 @@ pub fn tools() -> Vec<Value> {
         ),
         tool("get_layer", "The whole agent layer: questions, notes, client-data placeholders, history.", json!({}), &[], true),
         tool(
+            "edit_paragraphs",
+            "Edit several paragraphs in one go, one undo step (with topic: one step of that topic's proposal). Each edit: `at` (as for run_command; paragraph numbers as they are before this call), then any of text (replaces the quote, or the whole paragraph(s) without a quote; one paragraph, no newlines), style (paragraph style name: Heading 2, List Paragraph…), list {kind: bullet|number|none, level?: 0-8, restart?: true}, insertAfter (new paragraphs after it, in order: a string, or {text, style?, list?}; they continue its list). Example: §5 as a numbered list of four items is one edit: {at: {paragraph: 5}, text: \"first\", list: {kind: \"number\", restart: true}, insertAfter: [\"second\", \"third\", \"fourth\"]}.",
+            json!({"edits": {"type": "array", "items": {"type": "object", "properties": {"at": at_schema(), "text": s("New text"), "style": s("Paragraph style"), "list": {"type": "object", "properties": {"kind": {"type": "string", "enum": ["bullet", "number", "none"]}, "level": n("0-8"), "restart": {"type": "boolean"}}}, "insertAfter": {"type": "array", "items": {}}}}}, "reason": s("Why"), "source": s("What it is based on"), "topic": s("Propose in this topic instead of changing the document"), "option": s("The proposal's option: A (default), B…")}),
+            &["edits", "reason"],
+            false,
+        ),
+        tool(
+            "replace_text",
+            "Find text as you read it and replace it (\"\" deletes); one match, or every one with all: true, or within one paragraph. Client data can't be searched or replaced. One undo step (with topic: a proposal step).",
+            json!({"find": s("The text to find"), "replace": s("The new text"), "all": {"type": "boolean"}, "paragraph": para(), "reason": s("Why"), "source": s("What it is based on"), "topic": s("Propose in this topic"), "option": s("The proposal's option")}),
+            &["find", "replace", "reason"],
+            false,
+        ),
+        tool(
             "get_file_context",
             "The file's own context: what the document is, for whom, house rules, background, facts gathered. get_context and every question carry a short summary of it.",
             json!({}),
@@ -204,8 +231,8 @@ pub fn tools() -> Vec<Value> {
         ),
         tool(
             "run_command",
-            "Change the document with a WordCraft command (text.insert, format.bold, para.style…; see list_commands). `at` selects the text first. Logged as yours with the reason and source. Commands that read or search the real text are refused. With `topic` the document does NOT change: the command is recorded in that topic's proposal (option A unless `option` says otherwise) and checked on its draft; the person applies it in the document. In a topic, always propose this way; don't ask for confirmation in the chat.",
-            json!({"command": s("Command id"), "params": {"type": "object"}, "at": {"type": "object", "description": "{paragraph, quote?, occurrence?}: the text to act on", "properties": {"paragraph": para(), "quote": quote(), "occurrence": n("Which match of the quote (0-based)")}}, "reason": s("Why"), "source": s("What it is based on"), "topic": s("Propose in this topic (id or number) instead of changing the document"), "option": s("The option it belongs to: A (default), B, C… when there is a real choice")}),
+            "Change the document with a WordCraft command (text.insert, format.bold, para.style, para.numbering, table.insertRowBelow…; see list_commands). `at` selects the text first: a paragraph, a quote in it, through a later paragraph; with caret \"start\"/\"end\" it puts the caret there instead (text.newParagraph there splits a paragraph or adds one; text.delete at a paragraph's end joins the next). For several paragraphs at once (text, style, lists, new paragraphs) use edit_paragraphs. Logged as yours with the reason and source. Commands that read or search the real text are refused. With `topic` the document does NOT change: the command is recorded in that topic's proposal (option A unless `option` says otherwise) and checked on its draft; the person applies it in the document. In a topic, always propose this way; don't ask for confirmation in the chat.",
+            json!({"command": s("Command id"), "params": {"type": "object"}, "at": at_schema(), "reason": s("Why"), "source": s("What it is based on"), "topic": s("Propose in this topic (id or number) instead of changing the document"), "option": s("The option it belongs to: A (default), B, C… when there is a real choice")}),
             &["command", "reason"],
             false,
         ),
@@ -296,6 +323,10 @@ pub fn call(b: &mut dyn Backend, name: &str, args: &Value) -> Result<Value, Stri
         "get_layer" => exec_with(b, "agent.layer", json!({}), args),
         "run_command" => exec_with(b, "agent.exec", pick(args, &["command", "params", "at", "reason", "source", "topic", "option"]), args),
         "describe_option" => exec_with(b, "agent.describeOption", pick(args, &["topic", "option", "title", "why"]), args),
+        "edit_paragraphs" => exec_with(b, "agent.editParagraphs", pick(args, &["edits", "reason", "source", "topic", "option"]), args),
+        "replace_text" => {
+            exec_with(b, "agent.replaceText", pick(args, &["find", "replace", "all", "paragraph", "reason", "source", "topic", "option"]), args)
+        }
         "get_file_context" => exec_with(b, "agent.fileContext", json!({}), args),
         "add_file_context" => {
             let mut p = pick(args, &["title", "kind", "text"]);
@@ -324,18 +355,35 @@ pub fn call(b: &mut dyn Backend, name: &str, args: &Value) -> Result<Value, Stri
                             let id = c.get("id").and_then(Value::as_str).unwrap_or("");
                             let label = c.get("label").and_then(Value::as_str).unwrap_or("");
                             let mutates = c.get("mutates").and_then(Value::as_bool).unwrap_or(false);
-                            mutates
-                                && !id.starts_with("agent.")
-                                && !id.starts_with("ui.")
-                                && !id.starts_with("file.")
-                                && (q.is_empty() || id.to_lowercase().contains(&q) || label.to_lowercase().contains(&q))
+                            let positional = id.starts_with("select.") || id.starts_with("caret.");
+                            let menu = c.get("menu").or_else(|| c.get("location")).and_then(Value::as_str).unwrap_or("");
+                            (mutates || positional)
+                                && !crate::commands::refused(id)
+                                && (q.is_empty()
+                                    || id.to_lowercase().contains(&q)
+                                    || label.to_lowercase().contains(&q)
+                                    || menu.to_lowercase().contains(&q))
                         })
-                        .take(400)
-                        .map(|c| pick(c, &["id", "label", "params"]))
+                        .map(|c| if q.is_empty() { pick(c, &["id", "label"]) } else { pick(c, &["id", "label", "params"]) })
                         .collect()
                 })
                 .unwrap_or_default();
-            Ok(Value::Array(list))
+            Ok(json!({
+                "commands": list,
+                "note": "Every one of these runs with run_command (search to see their params). Aim with `at`; caret \"start\"/\"end\" for commands that act at the caret.",
+                "recipes": {
+                    "split a paragraph": "run_command text.newParagraph, at {paragraph, quote, caret: \"end\"} (splits after the quote)",
+                    "join a paragraph with the next": "run_command text.delete, at {paragraph, caret: \"end\"}",
+                    "add a paragraph before / after": "edit_paragraphs insertAfter (after); or text.newParagraph at {paragraph, caret: \"start\"} then text.insert",
+                    "numbered or bulleted list": "edit_paragraphs list {kind, level?, restart?} (para.numbering / para.bullets toggle: run once)",
+                    "list level / restart / start value": "para.listLevel {level}, para.restartNumbering, para.setNumberingValue",
+                    "styles and headings": "para.style {style}, format.charStyle {style}, para.heading1-3",
+                    "tables": "insert.table {rows, cols} at a caret; table.insertRowBelow, table.insertColumnRight, table.deleteRow, table.merge (at through the cells' paragraphs) with `at` in a cell; text.insert in a cell",
+                    "page and section breaks": "text.pageBreak at a caret; layout.break {kind: nextPage|continuous|evenPage|oddPage}",
+                    "footnotes, links, pictures": "references.footnote {text?} at a caret; insert.link {url} on a selection; insert.picture {data, width?}",
+                    "find and replace": "replace_text {find, replace, all?} (edit.find / edit.replace read the real text: refused)"
+                }
+            }))
         }
         other => Err(format!("unknown tool `{other}`")),
     }

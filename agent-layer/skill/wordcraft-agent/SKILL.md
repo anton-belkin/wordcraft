@@ -113,6 +113,19 @@ Client data reads as `{{placeholder}}` everywhere (`get_context.clientData`). So
 
 ## Changing the document
 
-Only through `run_command`, with `at: {paragraph, quote}` for the text to act on, a `reason` and,
-when there is one, a `source` (a question id, a URL). Every change is recorded as yours in the
-history the user sees. Ask before changes the user didn't ask for, except presentation fixes.
+Only through `run_command`, `edit_paragraphs` or `replace_text`, with a `reason` and, when there is
+one, a `source` (a question id, a URL). Every change is recorded as yours in the history the user
+sees. In a topic, add `topic`: it becomes a proposal (see above). Ask before changes the user
+didn't ask for, except presentation fixes.
+
+- `at`: `{paragraph, quote?, occurrence?}`, `through` (the last paragraph of a range) and
+  `throughQuote`, or `caret: "start" | "end"` for commands that act at the caret.
+- Split a paragraph: `text.newParagraph` at `{paragraph, quote, caret: "end"}`. Join one with the
+  next: `text.delete` at `{paragraph, caret: "end"}`. Add one: `insertAfter` in `edit_paragraphs`.
+- Several paragraphs at once (new text, styles, real bulleted or numbered lists with levels and a
+  restart, paragraphs added after): `edit_paragraphs` — one call, one undo step. A passage made a
+  numbered list of four items is one edit: `{at: {paragraph: 5}, text: "first", list: {kind:
+  "number", restart: true}, insertAfter: ["second", "third", "fourth"]}`.
+- Find and replace: `replace_text {find, replace, all?}` (on the text as you read it).
+- Everything else the editor can do (tables, breaks, sections, footnotes, links, pictures,
+  styles): `list_commands` (search by word; its recipes say how to aim them).
