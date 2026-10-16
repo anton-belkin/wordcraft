@@ -92,6 +92,10 @@ fn main() {
             let connect: agent_server::Connector = Arc::new(move || Ok(Box::new(Channel(tx.clone())) as Box<dyn wordcraft_mcp::Backend + Send>));
             let port = agent_server::start(port as u16, connect).expect("agent server");
             wordcraft_agent_ui::set_server_url(format!("http://127.0.0.1:{port}/mcp"));
+            // Connect Cowork shows the status for the app built next to this example.
+            if let Some(app) = std::env::current_exe().ok().and_then(|e| e.parent().and_then(|d| d.parent()).map(|d| d.join("wordcraft"))) {
+                wordcraft_agent_ui::set_stdio_entry(wordcraft_agent::cowork::entry(&app, 7981));
+            }
             println!("agent server on http://127.0.0.1:{port}/mcp");
         } else if let Some(id) = l.get("cmd").and_then(Value::as_str) {
             let params = l.get("params").cloned().unwrap_or(json!({}));

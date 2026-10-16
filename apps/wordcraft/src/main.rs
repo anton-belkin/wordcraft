@@ -318,6 +318,7 @@ fn open_non_unicode(app: &mut WordApp, path: &std::path::Path) {
 }
 
 fn main() -> eframe::Result {
+    agent::stdio_if_asked(); // fork:agent — `--agent-stdio` serves MCP and exits
     // First, so the panic hook and every start-up warning are recorded (`logging`).
     let logger = logging::install();
     logging::install_panic_hook();

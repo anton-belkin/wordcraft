@@ -16,8 +16,9 @@ WordCraft runs an MCP server itself: `http://127.0.0.1:7982/mcp`. If its tools (
 `claude mcp add --transport http wordcraft http://127.0.0.1:7982/mcp` (or check that WordCraft is
 open: `curl -s http://127.0.0.1:7982/health` prints `ok`).
 
-In Claude Desktop or Cowork the tools come from the local `wordcraft` server
-(`wordcraft-agent-mcp`, see the fork's FORK.md); if they are missing, ask the user to add it.
+In Claude Desktop or Cowork the tools come from the local `wordcraft` server (the app in stdio
+mode, `wordcraft --agent-stdio`); if they are missing, ask the user to press **Connect Cowork** on
+WordCraft's Agent tab, quit Claude with Cmd+Q and open it again.
 
 ## Watch for questions
 

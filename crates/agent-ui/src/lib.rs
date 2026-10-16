@@ -5,6 +5,8 @@
 //!   card, client data shaded and tagged with its placeholder;
 //! - the Agent pane: ask about the selection, read answers and notes with their sources, mark
 //!   client data, pick a client to render a template, the history, how to connect an agent;
+//! - the Agent tab on the ribbon (`ribbon.rs`): the pane with what is waiting, client data and the
+//!   template's client, the connection (server, agent, Claude Code command, Connect Cowork);
 //! - context-menu items: Ask the Agent, Mark as Client Data;
 //! - a launcher at the bottom right of the page that says what is waiting.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
@@ -12,6 +14,7 @@
 
 mod overlay;
 mod pane;
+mod ribbon;
 
 use std::sync::{Mutex, OnceLock};
 
@@ -22,7 +25,7 @@ use wordcraft_agent::layer::{Layer, QuestionStatus};
 use wordcraft_doc::{Path, Pos, StoryRef};
 use wordcraft_engine::{Selection, Session};
 use wordcraft_ui_egui::WordApp;
-use wordcraft_ui_egui::ext::{PageGeometry, UiExtension};
+use wordcraft_ui_egui::ext::{PageGeometry, RibbonTab, UiExtension};
 use wordcraft_ui_egui::theme::Tokens;
 
 static SERVER: OnceLock<String> = OnceLock::new();
@@ -37,6 +40,17 @@ pub fn install() {
 /// Tells the pane where the agent server listens (shown under Connect).
 pub fn set_server_url(url: String) {
     let _ = SERVER.set(url);
+}
+
+static STDIO_ENTRY: OnceLock<Json> = OnceLock::new();
+
+/// The `claude_desktop_config.json` entry that starts this app in stdio mode (Connect Cowork).
+pub fn set_stdio_entry(entry: Json) {
+    let _ = STDIO_ENTRY.set(entry);
+}
+
+pub(crate) fn stdio_entry() -> Option<Json> {
+    STDIO_ENTRY.get().cloned()
 }
 
 pub(crate) fn server_url() -> Option<&'static str> {
@@ -59,9 +73,7 @@ pub(crate) enum Tab {
     Ask,
     Questions,
     Notes,
-    Client,
     History,
-    Connect,
 }
 
 impl Tab {
@@ -69,9 +81,7 @@ impl Tab {
         match s {
             "questions" => Tab::Questions,
             "notes" => Tab::Notes,
-            "client" | "privacy" | "template" => Tab::Client,
             "history" => Tab::History,
-            "connect" => Tab::Connect,
             _ => Tab::Ask,
         }
     }
@@ -80,6 +90,8 @@ impl Tab {
 /// Something clicked while drawing, acted on in the next `frame` (drawing borrows the app).
 #[derive(Clone, Debug)]
 pub(crate) enum Act {
+    /// A line in the status bar.
+    Status(String),
     Open(Tab, Option<String>),
     Follow(String),
     Run(&'static str, Json),
@@ -281,6 +293,7 @@ impl AgentUi {
                     }
                 }
                 Act::Follow(href) => follow(self, app, ctx, &href),
+                Act::Status(s) => app.status(s),
                 Act::Run(id, params) => {
                     if let Err(e) = app.run(id, params) {
                         app.status(e);
@@ -297,7 +310,8 @@ impl AgentUi {
         }
     }
 
-    /// The Agent button at the bottom right of the page area, with what is waiting.
+    /// The Agent button at the bottom right of the page area, with what is waiting: only while the
+    /// ribbon (and its Agent tab) is out of sight.
     fn launcher(&mut self, app: &WordApp, ctx: &egui::Context) {
         let Some(area) = app.canvas.canvas_rect else { return };
         let l = wordcraft_agent::layer(&app.session);
@@ -345,7 +359,8 @@ impl UiExtension for AgentUi {
             self.tab = Tab::parse(&tab);
         }
         self.act(app, ctx);
-        if app.has_document() && !app.ui.backstage {
+        let ribbon_hidden = app.ui.ribbon_collapsed || app.session.view.focus_mode || app.session.view.read_mode;
+        if app.has_document() && !app.ui.backstage && ribbon_hidden {
             self.launcher(app, ctx);
         }
         // Answers arrive from another thread (the control channel): look again soon.
@@ -360,6 +375,18 @@ impl UiExtension for AgentUi {
 
     fn paint_pages(&mut self, app: &WordApp, ui: &Ui, painter: &egui::Painter, pages: &PageGeometry) {
         overlay::paint(self, app, ui, painter, pages);
+    }
+
+    fn ribbon_tabs(&self) -> Vec<RibbonTab> {
+        vec![RibbonTab { name: ribbon::TAB, keytip: ribbon::KEYTIP }]
+    }
+
+    fn ribbon_tab(&mut self, app: &mut WordApp, ui: &mut Ui, name: &str) -> bool {
+        if name != ribbon::TAB {
+            return false;
+        }
+        ribbon::show(self, app, ui);
+        true
     }
 
     fn context_menu(&mut self, app: &mut WordApp, ui: &mut Ui) {
@@ -397,5 +424,29 @@ impl UiExtension for AgentUi {
             self.open = !self.open;
             ui.close();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use wordcraft_ui_egui::keytips::{self, Phase};
+    use wordcraft_ui_egui::{Services, WordApp};
+
+    #[test]
+    fn the_agent_tab_has_a_keytip_and_alt_a_opens_it() {
+        super::install();
+        let mut app = WordApp::new(wordcraft_engine::Session::new(wordcraft_agent::sample::engagement_letter()), Services::default());
+        assert_eq!(keytips::tab_letter("Agent"), "A");
+        assert!(keytips::badge_tabs(&app).contains(&"Agent"));
+        // The built-in letters are untouched.
+        assert_eq!(keytips::tab_letter("Help"), "Y");
+        assert_eq!(keytips::tab_letter("Table Design"), "JT");
+        app.ui.keytips = Phase::Tabs;
+        assert!(keytips::handle_key(&mut app, egui::Key::A));
+        assert_eq!(app.ui.tab, "Agent");
+        // Its controls have no badges: a letter there just leaves keytips.
+        assert_eq!(app.ui.keytips, Phase::Commands);
+        assert!(keytips::handle_key(&mut app, egui::Key::Z));
+        assert_eq!(app.ui.keytips, Phase::Off);
     }
 }

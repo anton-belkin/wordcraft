@@ -5,7 +5,6 @@ use egui::{Color32, RichText, Ui};
 use serde_json::json;
 use wordcraft_agent::anchor::{self, Span};
 use wordcraft_agent::layer::{Actor, Layer, Link, Note, Question, QuestionStatus};
-use wordcraft_agent::mask;
 use wordcraft_doc::Path;
 use wordcraft_ui_egui::WordApp;
 use wordcraft_ui_egui::theme::{self, Tokens};
@@ -46,9 +45,7 @@ pub(crate) fn show(st: &mut AgentUi, app: &mut WordApp, ui: &mut Ui) {
                     (Tab::Ask, "Ask".to_string()),
                     (Tab::Questions, qlabel),
                     (Tab::Notes, format!("Notes ({})", l.notes.len())),
-                    (Tab::Client, "Client data".into()),
                     (Tab::History, "History".into()),
-                    (Tab::Connect, "Connect".into()),
                 ] {
                     if ui.selectable_label(st.tab == tab, name).clicked() {
                         st.tab = tab;
@@ -60,9 +57,7 @@ pub(crate) fn show(st: &mut AgentUi, app: &mut WordApp, ui: &mut Ui) {
                 Tab::Ask => ask_tab(st, app, ui, &l, &t, &p),
                 Tab::Questions => questions_tab(st, app, ui, &l, &t, &p),
                 Tab::Notes => notes_tab(st, app, ui, &l, &t, &p),
-                Tab::Client => client_tab(st, app, ui, &l, &t, &p),
                 Tab::History => history_tab(ui, &l, &t, &p),
-                Tab::Connect => connect_tab(ui, &t),
             });
         });
     if close {
@@ -279,80 +274,6 @@ fn notes_tab(st: &mut AgentUi, app: &mut WordApp, ui: &mut Ui, l: &Layer, t: &To
     st.acts.extend(acts);
 }
 
-fn client_tab(st: &mut AgentUi, app: &mut WordApp, ui: &mut Ui, l: &Layer, t: &Tokens, p: &Palette) {
-    let mut acts = vec![];
-    let render = wordcraft_agent::render_state(&app.session).map(|r| r.client.clone());
-    let template = wordcraft_agent::template::is_template(wordcraft_agent::agent_doc(&app.session));
-    if template || render.is_some() {
-        ui.label(RichText::new("Template").font(theme::semibold(13.0)));
-        ui.label(
-            RichText::new("Show the document filled in for a client. Your agent keeps working on the template and never sees the client's data.")
-                .color(t.text_dim)
-                .small(),
-        );
-        let clients = wordcraft_agent::crm::clients();
-        let name_of = |id: &str| clients.iter().find(|c| c["id"] == id).and_then(|c| c["name"].as_str()).unwrap_or(id).to_string();
-        let shown = render.as_deref().map_or_else(|| "The template (placeholders)".to_string(), name_of);
-        egui::ComboBox::from_id_salt("agent_client").selected_text(shown).width(ui.available_width() - 8.0).show_ui(ui, |ui| {
-            if ui.selectable_label(render.is_none(), "The template (placeholders)").clicked() {
-                acts.push(Act::Run("agent.render", json!({"client": null})));
-            }
-            for c in &clients {
-                let id = c["id"].as_str().unwrap_or("");
-                let name = c["name"].as_str().unwrap_or(id);
-                if ui.selectable_label(render.as_deref() == Some(id), format!("{name}  ·  {id}")).clicked() {
-                    acts.push(Act::Run("agent.render", json!({"client": id})));
-                }
-            }
-        });
-        ui.add_space(10.0);
-    } else if ui.button("Open the demo template (engagement letter)").clicked() {
-        acts.push(Act::Run("agent.openDemo", json!({})));
-    }
-    ui.label(RichText::new("Client data").font(theme::semibold(13.0)));
-    ui.label(
-        RichText::new("Text marked as client data reads as a {{placeholder}} in everything your agent sees, and the agent can't change it. Only you can lift the mark.")
-            .color(t.text_dim)
-            .small(),
-    );
-    if render.is_none() {
-        let sel = selection_span(&app.session).filter(|_| !app.session.sel.is_collapsed());
-        ui.horizontal(|ui| {
-            ui.label("Placeholder");
-            ui.add(egui::TextEdit::singleline(&mut st.label).hint_text("client.name").desired_width(140.0));
-        });
-        if ui.add_enabled(sel.is_some(), egui::Button::new("Mark the selection as client data")).clicked()
-            && let Some(sp) = sel
-        {
-            let mut params = span_params(&app.session, &sp);
-            if !st.label.trim().is_empty() {
-                params["label"] = json!(st.label.trim());
-            }
-            acts.push(Act::Run("agent.private", params));
-            st.label.clear();
-        }
-    }
-    ui.add_space(6.0);
-    let paras = anchor::paragraphs(&app.session.doc);
-    for pr in &l.private {
-        let sp = span_of(&app.session, &paras, l, &pr.anchor);
-        card(ui, t, p.private, false, |ui| {
-            ui.label(RichText::new(mask::placeholder(&pr.label)).color(p.private).font(theme::semibold(12.0)));
-            let fallback = l.anchor(&pr.anchor).map(|a| a.quote.clone()).unwrap_or_default();
-            quote_link(app, ui, t, sp.clone(), &fallback, &mut acts);
-            if render.is_none()
-                && let Some(sp) = sp
-                && ui.small_button("Unmark").clicked()
-            {
-                let mut params = span_params(&app.session, &sp);
-                params["on"] = json!(false);
-                acts.push(Act::Run("agent.private", params));
-            }
-        });
-    }
-    st.acts.extend(acts);
-}
-
 fn history_tab(ui: &mut Ui, l: &Layer, t: &Tokens, p: &Palette) {
     if l.log.is_empty() {
         ui.label(RichText::new("Who changed what, and why: your edits and your agent's, with the reasons and sources it gave.").color(t.text_dim));
@@ -374,32 +295,4 @@ fn history_tab(ui: &mut Ui, l: &Layer, t: &Tokens, p: &Palette) {
         ui.add_space(4.0);
         ui.separator();
     }
-}
-
-fn connect_tab(ui: &mut Ui, t: &Tokens) {
-    let url = crate::server_url().unwrap_or("http://127.0.0.1:7982/mcp");
-    let base = url.trim_end_matches("/mcp");
-    ui.label(RichText::new("Connect your agent").font(theme::semibold(13.0)));
-    ui.label(
-        RichText::new(
-            "WordCraft runs an MCP server for your own agent (Claude Code, Claude Desktop or any MCP client). It only listens on this computer.",
-        )
-        .color(t.text_dim)
-        .small(),
-    );
-    ui.add_space(6.0);
-    let mono = |ui: &mut Ui, s: &str| {
-        egui::Frame::NONE.fill(t.input).corner_radius(4.0).inner_margin(6.0).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.add(egui::Label::new(RichText::new(s).monospace().size(11.5)).wrap());
-        });
-    };
-    ui.label("Claude Code:");
-    mono(ui, &format!("claude mcp add --transport http wordcraft {url}"));
-    ui.label("Watch for questions in the background:");
-    mono(ui, &format!("curl -sN {base}/events"));
-    ui.label("Check that it's running:");
-    mono(ui, &format!("curl -s {base}/health"));
-    ui.add_space(6.0);
-    ui.label(RichText::new("Tools: get_context, read_document, list_questions, wait_for_questions, claim_question, answer_question, add_note, log_decision, run_command.").color(t.text_dim).small());
 }

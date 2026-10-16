@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "wordcraft": {
-      "command": "/Users/antonbelkin/wordcraft-fork/target/release/wordcraft-agent-mcp",
-      "args": ["--control", "127.0.0.1:7981"]
+      "command": "/Users/antonbelkin/wordcraft-fork/target/release/wordcraft",
+      "args": ["--agent-stdio", "--control", "127.0.0.1:7981"]
     }
   }
 }

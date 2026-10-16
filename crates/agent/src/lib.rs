@@ -20,6 +20,8 @@
 
 pub mod anchor;
 pub mod commands;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod cowork;
 pub mod crm;
 pub mod layer;
 pub mod mask;
@@ -61,6 +63,14 @@ pub fn install() {
         wordcraft_engine::ext::register_commands(commands::specs());
         wordcraft_engine::ext::register_observer(&KEEPER);
     });
+}
+
+static LAST_AGENT_CALL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// When an agent last called the layer (ms since the epoch; 0 for never), through MCP over HTTP
+/// or stdio alike.
+pub fn last_agent_call_ms() -> u64 {
+    LAST_AGENT_CALL.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 // ---------------------------------------------------------------- per-session state
@@ -208,7 +218,10 @@ fn on_template(id: &str) -> bool {
 }
 
 impl Observer for Keeper {
-    fn before(&self, s: &mut Session, id: &str, _params: &Json) {
+    fn before(&self, s: &mut Session, id: &str, params: &Json) {
+        if id.starts_with("agent.") && params.get("actor").and_then(Json::as_str) == Some("agent") {
+            LAST_AGENT_CALL.store(now_ms(), std::sync::atomic::Ordering::Relaxed);
+        }
         ensure(s);
         let swapped = if on_template(id) && !commands::in_agent_exec() { template_in(s) } else { None };
         SWAPPED.with(|w| w.borrow_mut().push(swapped));

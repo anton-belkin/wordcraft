@@ -1,0 +1,16 @@
+{"start": "demo", "width": 1440, "height": 900}
+{"serve": 7992}
+{"cmd": "agent.private", "params": {"paragraph": 2, "quote": "KYC-2026-0412", "label": "client.kyc_ref"}}
+{"cmd": "select.text", "params": {"text": "payable within 30 days"}}
+{"cmd": "agent.ask", "params": {"text": "Is 30 days standard here?"}}
+{"exec": "curl -s -X POST http://127.0.0.1:7992/mcp -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"answer_question\",\"arguments\":{\"id\":\"q3\",\"text\":\"Yes, 30 days is the usual term for engagements invoiced in advance.\"}}}' >/dev/null"}
+{"cmd": "select.text", "params": {"text": "Dana Whitcombe"}}
+{"cmd": "ui.tab", "params": {"tab": "Agent"}}
+{"shot": "SHOTS/t2-agent-tab.png"}
+{"cmd": "agent.render", "params": {"client": "CL-9V5H1N6W"}}
+{"pane": "questions"}
+{"shot": "SHOTS/t3-agent-tab-preview-pane.png"}
+{"cmd": "agent.render", "params": {"client": null}}
+{"cmd": "ui.collapseRibbon", "params": {}}
+{"pane": null}
+{"shot": "SHOTS/t4-ribbon-collapsed-launcher.png"}

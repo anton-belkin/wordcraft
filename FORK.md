@@ -16,11 +16,11 @@ before changing anything outside the agent crates.
 | Path | What | Upstream? |
 | --- | --- | --- |
 | `crates/agent/` (`wordcraft-agent`, L5) | The layer: data model and storage in the `.docx`, quote anchors, the privacy mask, templates and the CRM fixture, `agent.*` commands, the observer (save, history, template preview), the in-app MCP server, and `wordcraft-agent-mcp` (the same over stdio) | fork only |
-| `crates/agent-ui/` (`wordcraft-agent-ui`, L6) | The Agent pane, badges and margin notes on the page, client-data marks, the client picker, the launcher, context-menu items; `examples/agent_demo.rs` renders the window offscreen with the real MCP server | fork only |
+| `crates/agent-ui/` (`wordcraft-agent-ui`, L6) | The Agent tab on the ribbon (groups Agent, Client data, Connection), the Agent pane (the passage's questions, answers, notes, history), badges and margin notes on the page, context-menu items; `examples/agent_demo.rs` renders the window offscreen with the real MCP server | fork only |
 | `apps/wordcraft/src/agent.rs` | Starts the layer in the desktop app (`--agent-port`, `--no-agent`, `--agent-demo`) | fork only |
 | `agent-layer/` | The agent's skill, the end-to-end demo script, the rebase script | fork only |
 | `crates/engine/src/ext.rs` | **Hook**: extension commands, command observers, per-session extension state | new file in an upstream crate |
-| `crates/ui-egui/src/ext.rs` | **Hook**: UI extensions (side panel, page overlay, context menu, per-frame) | new file in an upstream crate |
+| `crates/ui-egui/src/ext.rs` | **Hook**: UI extensions (side panel, page overlay, context menu, ribbon tabs, per-frame) | new file in an upstream crate |
 | lines marked `fork:agent` | The only edits to upstream files | patch |
 
 ### The patch to upstream files
@@ -34,9 +34,14 @@ lists them; there are about twenty lines, all insertions but one:
   `edit_snapshot`'s destructuring), and the observers called before and after each command in
   `Session::run`.
 - `crates/ui-egui/src/lib.rs`: `pub mod ext;`, `ext::frame` and `ext::side_panels` in `WordApp::ui`.
+- `crates/ui-egui/src/ribbon.rs`: extension tabs appended to the tab strip, and drawn by their
+  extension (`ext::ribbon_tab`).
+- `crates/ui-egui/src/keytips.rs`: extension tabs' keytips (`tab_letter`, `badge_tabs`); the Agent
+  tab is Alt, A (F10, A on macOS).
 - `crates/ui-egui/src/canvas.rs`: `ext::paint_pages` after Find's highlights; the context menu's
   closure also calls `ext::context_menu` (the one changed line).
-- `apps/wordcraft/src/main.rs`, `apps/wordcraft/Cargo.toml`: wiring (six lines, two deps).
+- `apps/wordcraft/src/main.rs`, `apps/wordcraft/Cargo.toml`: wiring (seven lines, two deps; the
+  first line of `main` hands `--agent-stdio` to the agent layer).
 - `Cargo.toml`: the two workspace dependencies.
 - `xtask/src/layers.rs`: the two crates in the layer table and their order within L5/L6.
 
@@ -93,19 +98,24 @@ claude mcp add --transport http wordcraft http://127.0.0.1:7982/mcp
 
 and give it the skill in `agent-layer/skill/`.
 
-**Claude Desktop / Cowork (stdio).** Clients that start local MCP servers as processes use
-`wordcraft-agent-mcp` (`crates/agent/src/bin`), the same tools over stdio, reaching the app through
-its control channel (the key file in the settings folder; it connects on first use, so it can start
-before WordCraft):
+**Claude Desktop / Cowork (stdio).** Clients that start local MCP servers as processes run the app
+itself in stdio mode: `wordcraft --agent-stdio [--control 127.0.0.1:7981]` serves the same tools
+over stdio and exits when stdin closes, reaching the running app through its control channel (it
+connects on first use, so Claude can start before WordCraft). The config entry, server name
+`wordcraft`:
 
-```bash
-cargo build --release -p wordcraft-agent
+```json
+"wordcraft": {"command": "<path to the wordcraft executable>", "args": ["--agent-stdio", "--control", "127.0.0.1:7981"]}
 ```
 
-then add the entry from `agent-layer/claude_desktop_config.example.json` to
-`~/Library/Application Support/Claude/claude_desktop_config.json` and restart Claude Desktop. There
-is no event stream over stdio: the agent listens with `wait_for_questions` in a loop (each call
-waits up to 50 s), or a scheduled task checks `list_questions` every few minutes. Offscreen, with the real server and `curl` as the
+The **Connect Cowork** button (Agent tab ▸ Connection) writes it into
+`~/Library/Application Support/Claude/claude_desktop_config.json` (Windows: `%APPDATA%\Claude\…`),
+keeping every other server and setting and copying the old file to `….bak-wordcraft-<time>`. Claude
+Desktop keeps that file in memory and writes it back when it quits, so an entry added while it runs
+is lost: if Claude is running, the button waits until it has quit (Cmd+Q), then writes; open Claude
+again and the tools are there (`crates/agent/src/cowork.rs`). There is no event stream over stdio:
+the agent listens with `wait_for_questions` in a loop (each call waits up to 50 s).
+`wordcraft-agent-mcp` (`crates/agent/src/bin`) is the same server as a separate small binary. Offscreen, with the real server and `curl` as the
 agent (works with a locked screen):
 
 ```bash
