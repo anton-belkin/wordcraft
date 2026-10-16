@@ -18,6 +18,8 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
+#[cfg(not(target_arch = "wasm32"))]
+pub mod aitocraft;
 pub mod anchor;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod channel;
@@ -30,6 +32,8 @@ pub mod mask;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod mcp;
 pub mod presence;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod registry;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod runner;
 pub mod sample;
@@ -78,6 +82,67 @@ static LAST_AGENT_CALL: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomic
 /// or stdio alike.
 pub fn last_agent_call_ms() -> u64 {
     LAST_AGENT_CALL.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+// ---------------------------------------------------------------- the document, as AItoCraft names it
+
+/// The app's name in the AItoCraft registry and in document ids.
+pub const APP: &str = "wordcraft";
+pub const APP_TITLE: &str = "WordCraft";
+
+fn pid() -> u32 {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::process::id()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        0
+    }
+}
+
+/// The open document's id: `wordcraft:<pid>:<doc uid>`, unique across apps and stable while it
+/// stays open (a WordCraft window holds one document; opening another gives a new id).
+pub fn document_id(s: &Session) -> String {
+    format!("{APP}:{}:{}", pid(), s.document_id())
+}
+
+/// The document's title: its file name, else its title, else "Untitled".
+pub fn document_title(s: &Session) -> String {
+    s.file_name
+        .clone()
+        .or_else(|| s.path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()))
+        .or_else(|| (!s.doc.core.title.is_empty()).then(|| s.doc.core.title.clone()))
+        .unwrap_or_else(|| "Untitled".into())
+}
+
+static FOCUSED_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The app's window has the focus now.
+pub fn note_focus() {
+    FOCUSED_AT.store(now_ms(), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The document as the registry and `list_documents` describe it (titles and paths only).
+pub fn document_json(s: &Session) -> Json {
+    let id = document_id(s);
+    let l = layer(s);
+    let open = l.questions.iter().filter(|q| q.status != layer::QuestionStatus::Answered).count();
+    let listeners: Vec<Json> = presence::listeners_of(&id)
+        .into_iter()
+        .map(|x| serde_json::json!({"listener": x.listener, "label": x.label, "lastSeen": x.last_seen}))
+        .collect();
+    let path = s.path.as_ref().map(|p| std::path::absolute(p).unwrap_or_else(|_| p.clone()).to_string_lossy().into_owned());
+    serde_json::json!({
+        "id": id,
+        "title": document_title(s),
+        "path": path,
+        // One document per window: it is the window's.
+        "frontmost": true,
+        "focusedAt": FOCUSED_AT.load(std::sync::atomic::Ordering::Relaxed),
+        "openQuestions": open,
+        "listeners": listeners,
+    })
 }
 
 // ---------------------------------------------------------------- per-session state

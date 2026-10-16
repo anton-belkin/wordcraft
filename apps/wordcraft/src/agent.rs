@@ -73,6 +73,11 @@ pub fn start(o: Options, control: Option<u16>) {
                 Some(m) => wordcraft_agent::runner::set_mode(m),
                 None => wordcraft_agent::presence::store_mode(wordcraft_agent::runner::load_mode().unwrap_or_default()),
             }
+            let mut c = wordcraft_agent::runner::config();
+            c.document_folder = wordcraft_agent::runner::load_document_folder();
+            wordcraft_agent::runner::set_config(c);
+            // AItoCraft: announce this app and its document to the hub.
+            wordcraft_agent::registry::start(format!("http://127.0.0.1:{port}/mcp"), None);
             if let Some(e) = stdio_entry(Some(control)) {
                 wordcraft_agent_ui::set_stdio_entry(e);
             }
@@ -108,4 +113,9 @@ pub fn stdio_if_asked() {
 pub fn stdio_entry(control: Option<u16>) -> Option<serde_json::Value> {
     let exe = std::env::current_exe().ok()?;
     Some(wordcraft_agent::cowork::entry(&exe, control.unwrap_or(CONTROL_PORT)))
+}
+
+/// On exit: the AItoCraft registry file goes, and the background agent stops.
+pub fn exit() {
+    wordcraft_agent::registry::exit();
 }

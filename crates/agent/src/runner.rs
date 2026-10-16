@@ -2,8 +2,10 @@
 //! `claude -p --input-format stream-json --output-format stream-json --verbose` process per
 //! document, fed each new question once as a stream-json user message.
 //!
-//! - It runs in the document's folder, so its session sits with the matter's other files in
-//!   Claude Desktop's Code tab, named `WordCraft · <file>` (`--name`).
+//! - It runs in a neutral, empty folder of the app (`ArtCraft/agent-sessions/`, its sessions grouped
+//!   there in Claude Desktop), so no project's CLAUDE.md, memory or settings become its context;
+//!   the document's folder is an explicit option ([`Config::document_folder`]). Its session is
+//!   named `WordCraft · <file>` (`--name`).
 //! - It sees only the WordCraft server (`--mcp-config` + `--strict-mcp-config`, the user's own
 //!   servers and plugins stay out of its context) and may use only its tools
 //!   (`--allowedTools "mcp__wordcraft__*"`); the agent skill is its system prompt
@@ -50,6 +52,27 @@ pub fn load_mode() -> Option<Mode> {
     std::fs::read_to_string(dir.join("mode")).ok().and_then(|s| Mode::parse(&s))
 }
 
+/// The neutral folder background sessions run in: `ArtCraft/agent-sessions/`.
+pub fn neutral_folder() -> Option<PathBuf> {
+    crate::registry::folder().and_then(|d| d.parent().map(|p| p.join("agent-sessions")))
+}
+
+/// Whether the background agent runs in the document's folder (remembered, like the mode).
+pub fn set_document_folder(on: bool) {
+    let mut c = config();
+    c.document_folder = on;
+    if let Some(dir) = &c.data_dir {
+        let _ = std::fs::create_dir_all(dir);
+        let _ = std::fs::write(dir.join("cwd"), if on { "document" } else { "neutral" });
+    }
+    set_config(c);
+}
+
+/// The folder choice remembered from the last run.
+pub fn load_document_folder() -> bool {
+    config().data_dir.and_then(|d| std::fs::read_to_string(d.join("cwd")).ok()).is_some_and(|s| s.trim() == "document")
+}
+
 // ---------------------------------------------------------------- configuration
 
 /// How the background agent is started.
@@ -61,9 +84,11 @@ pub struct Config {
     pub mcp_url: String,
     pub max_turns: u32,
     pub max_budget_usd: f64,
-    /// Where the MCP config, the skill and the mode are kept, and the agent's folder for a document
-    /// with no file yet.
+    /// Where the MCP config, the skill and the mode are kept.
     pub data_dir: Option<PathBuf>,
+    /// Run in the document's folder (its CLAUDE.md, memory and settings become the agent's
+    /// context) instead of the neutral `ArtCraft/agent-sessions/`.
+    pub document_folder: bool,
 }
 
 impl Default for Config {
@@ -79,6 +104,7 @@ impl Default for Config {
             max_turns: 40,
             max_budget_usd: 3.0,
             data_dir: None,
+            document_folder: false,
         }
     }
 }
@@ -293,10 +319,7 @@ fn new_uuid() -> String {
 }
 
 fn display_name(s: &Session) -> String {
-    s.file_name
-        .clone()
-        .or_else(|| s.path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()))
-        .unwrap_or_else(|| if s.doc.core.title.is_empty() { "Untitled".into() } else { s.doc.core.title.clone() })
+    crate::document_title(s)
 }
 
 /// Starts this document's background agent (resuming its session when it has one).
@@ -311,14 +334,11 @@ pub fn start(s: &mut Session) -> Result<Status, String> {
     let l = crate::layer(s);
     let fresh = slot(s).is_some_and(|sl| sl.fresh);
     let (session, resume) = if l.agent_session.is_empty() || fresh { (new_uuid(), false) } else { (l.agent_session.clone(), true) };
-    // The document's folder: its session sits with the matter's files.
-    let cwd = s
-        .path
-        .as_deref()
-        .and_then(|p| std::path::absolute(p).ok())
-        .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
-        .or_else(|| c.data_dir.clone())
-        .unwrap_or_else(std::env::temp_dir);
+    // A neutral, empty folder by default; the document's folder only when asked for.
+    let doc_folder = || s.path.as_deref().and_then(|p| std::path::absolute(p).ok()).and_then(|p| p.parent().map(std::path::Path::to_path_buf));
+    let cwd =
+        if c.document_folder { doc_folder() } else { None }.or_else(neutral_folder).or_else(|| c.data_dir.clone()).unwrap_or_else(std::env::temp_dir);
+    let _ = std::fs::create_dir_all(&cwd);
     let name = format!("WordCraft · {}", display_name(s));
     let mut child = Command::new(&c.command)
         .args(args(&c, &session, resume, &mcp, skill.as_deref(), &name))

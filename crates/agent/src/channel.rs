@@ -40,7 +40,7 @@ pub fn notification(q: &Json) -> Json {
         "params": {
             "content": content,
             // Keys must be identifiers (letters, digits, underscores).
-            "meta": {"question_id": id, "kind": if get("kind") == "ping" { "ping" } else { "question" }},
+            "meta": {"question_id": id, "kind": if get("kind") == "ping" { "ping" } else { "question" }, "document": get("document")},
         },
     })
 }

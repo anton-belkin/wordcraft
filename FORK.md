@@ -92,6 +92,30 @@ upstream. Each one accepted upstream removes its lines from the patch.
   last minute (its calls carry `waiting`, so HTTP and stdio count alike), the background agent
   running: "Listener connected · not checked". Else "Nobody is listening". Stream polls carry
   `poll`, so neither counts as the agent's last tool call.
+- **AItoCraft** (`~/aitocraft/PROTOCOL.md`): one MCP hub, configured once in Claude Desktop /
+  Cowork and Claude Code, serves every open document of every Craft app; the user picks the
+  context by starting the conversation where the work belongs ("we're working on contract.docx").
+  WordCraft's side:
+  - *Registry* (`registry.rs`): `ArtCraft/agents/wordcraft-<pid>.json` (`protocol`, `app`,
+    `appTitle`, `version`, `pid`, `mcp`, `heartbeat`, `documents`), written atomically at start, on
+    change (at most once a second) and every 10 s, deleted on exit (`on_exit` and the macOS
+    terminate path). Titles and paths only. A WordCraft window holds one document, so a registry
+    file lists one; its id is `wordcraft:<pid>:<document uid>` (a new id when another file is
+    opened in the window). `focusedAt` (when the window last had the focus) is added for the hub.
+  - *MCP*: every tool takes an optional `document` (an id of another document is an error:
+    `document <id> is not open in WordCraft`); `list_documents`, `attach {document, label}` →
+    `{listener, document, title, app}`, `detach {listener}`; `listener` on list_questions,
+    wait_for_questions, claim_question and answer_question (refreshes it; dropped after 90 s; an
+    unknown one is told to attach again); every question carries `document` and `documentTitle`;
+    `GET /events?document=<id>`; a ping answer records the listener that answered.
+  - *Connection group*: the status is this document's ("Listening: Cowork · Acme · seen 20 s ago",
+    the check's result, or "Nobody is listening for this document"); modes "Claude Desktop / Cowork
+    (AItoCraft)", "My Claude Code session (AItoCraft channel)", "Background agent", "Off"; Copy ▸
+    "Copy phrase for Claude", "Install AItoCraft in Claude Desktop" (runs `aitocraft
+    --install-desktop` when the binary is found: PATH, `~/.local/bin`, `~/aitocraft/target/release`),
+    "Claude Code: add AItoCraft", and for the channel "Start Claude Code with the channel". The
+    per-app connections (`wordcraft --agent-stdio`, HTTP, the monitor command) stay under Details as
+    the fallback.
 - **The app can bring the agent in itself**, in a mode the app sets (Agent tab ▸ Connection ▸
   Mode, or `--agent-mode connect|channel|background|off`, remembered in the settings folder; never
   from the file: a document someone sends must not start an agent that spends the reader's money).
@@ -103,9 +127,10 @@ upstream. Each one accepted upstream removes its lines from the patch.
     spawns channel servers over stdio). Copy ▸ `claude mcp add wordcraft-channel -- <wordcraft>
     --agent-stdio`, then `claude --dangerously-load-development-channels
     server:wordcraft-channel`. Interactive sessions only (`-p` ignores channels).
-  - *Background agent* (`runner.rs`): one `claude -p --input-format stream-json --output-format
-    stream-json --verbose` per document, in the document's folder (its session sits with the
-    matter's files in Claude Desktop ▸ Code), named `WordCraft · <file>` (`--name`), with
+  - *Background agent* (`runner.rs`, demoted: it decides the context itself): one `claude -p
+    --input-format stream-json --output-format stream-json --verbose` per document, by default in a
+    neutral, empty folder (`ArtCraft/agent-sessions/`, so no project's CLAUDE.md, memory or settings
+    become its context); "Run in the document's folder" is an explicit, remembered option. Named `WordCraft · <file>` (`--name`), with
     `--mcp-config` + `--strict-mcp-config` (only the WordCraft server), `--allowedTools
     "mcp__wordcraft__*"`, the skill as `--append-system-prompt-file`, `--max-turns 40`,
     `--max-budget-usd 3.00`. It starts with the first waiting question and gets each new one once;

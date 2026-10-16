@@ -358,6 +358,15 @@ impl UiExtension for AgentUi {
         wordcraft_agent::ensure(&mut app.session);
         // The background agent: started on the first question, fed each new one.
         wordcraft_agent::runner::tick(&mut app.session);
+        // AItoCraft: what is open, for the registry (written when it changes, and as a heartbeat).
+        if ctx.input(|i| i.focused) {
+            wordcraft_agent::note_focus();
+        }
+        if app.has_document() {
+            wordcraft_agent::registry::observe(serde_json::json!([wordcraft_agent::document_json(&app.session)]));
+        } else {
+            wordcraft_agent::registry::observe(serde_json::json!([]));
+        }
         if let Some((open, tab)) = REQUEST.lock().ok().and_then(|mut r| r.take()) {
             self.open = open;
             self.tab = Tab::parse(&tab);

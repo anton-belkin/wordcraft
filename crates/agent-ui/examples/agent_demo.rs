@@ -98,6 +98,8 @@ fn main() {
                 wordcraft_agent_ui::set_stdio_entry(wordcraft_agent::cowork::entry(&app, 7981));
             }
             println!("agent server on http://127.0.0.1:{port}/mcp");
+            // The AItoCraft registry, in the shots folder (not the user's).
+            wordcraft_agent::registry::start(format!("http://127.0.0.1:{port}/mcp"), Some(std::path::PathBuf::from(&shots).join("registry")));
         } else if let Some(id) = l.get("cmd").and_then(Value::as_str) {
             let params = l.get("params").cloned().unwrap_or(json!({}));
             let r = harness.state_mut().run(id, params);

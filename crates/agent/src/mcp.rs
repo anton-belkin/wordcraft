@@ -20,7 +20,17 @@ into client data. When the document is a template (get_context.template), edit i
 renders it for a client themselves; you never see a client's values. A question with kind ping is a connection check: answer it at \
 once with \"here\", don't investigate.";
 
-fn tool(name: &str, desc: &str, props: Value, required: &[&str], read_only: bool) -> Value {
+/// Tools that take a `listener` (AItoCraft: a call carrying it keeps the conversation attached).
+const LISTENER_TOOLS: &[&str] = &["list_questions", "wait_for_questions", "claim_question", "answer_question"];
+
+fn tool(name: &str, desc: &str, mut props: Value, required: &[&str], read_only: bool) -> Value {
+    // Every tool may name the document (an AItoCraft registry id); without it, the open one.
+    if let Value::Object(o) = &mut props {
+        o.entry("document").or_insert_with(|| s("Document id from list_documents / attach (e.g. \"wordcraft:4121:1\"); omit for the open document"));
+        if LISTENER_TOOLS.contains(&name) {
+            o.entry("listener").or_insert_with(|| s("Your listener id from attach (keeps you attached; questions of that document only)"));
+        }
+    }
     json!({
         "name": name,
         "description": desc,
@@ -113,6 +123,21 @@ pub fn tools() -> Vec<Value> {
             false,
         ),
         tool(
+            "list_documents",
+            "The documents open in WordCraft (id, title, path, open questions, who listens), as in the AItoCraft registry.",
+            json!({}),
+            &[],
+            true,
+        ),
+        tool(
+            "attach",
+            "Bind this conversation to a document: questions asked there reach you. Returns your listener id: pass it (and the document id) on list_questions, wait_for_questions, claim_question and answer_question.",
+            json!({"label": s("What the user sees, e.g. \"Cowork · Acme\" or \"Claude Code · contracts\"")}),
+            &[],
+            false,
+        ),
+        tool("detach", "Stop listening for a document's questions.", json!({"listener": s("Your listener id from attach")}), &["listener"], false),
+        tool(
             "list_commands",
             "List WordCraft commands that change the document (id, label, params).",
             json!({"search": s("Substring to filter on")}),
@@ -122,8 +147,14 @@ pub fn tools() -> Vec<Value> {
     ]
 }
 
-fn exec(b: &mut dyn Backend, command: &str, mut params: Value) -> Result<Value, String> {
+/// Runs `command` for the agent, carrying the call's `document` and `listener` along.
+fn exec_with(b: &mut dyn Backend, command: &str, mut params: Value, args: &Value) -> Result<Value, String> {
     if let Value::Object(o) = &mut params {
+        for k in ["document", "listener"] {
+            if let Some(v) = args.get(k).filter(|v| v.is_string()) {
+                o.entry(k).or_insert_with(|| v.clone());
+            }
+        }
         o.insert("actor".into(), json!("agent"));
         o.insert("masked".into(), json!(true));
     }
@@ -142,14 +173,17 @@ fn pick(args: &Value, keys: &[&str]) -> Value {
 
 pub fn call(b: &mut dyn Backend, name: &str, args: &Value) -> Result<Value, String> {
     match name {
-        "get_context" => exec(b, "agent.context", json!({})),
-        "read_document" | "read_range" => exec(b, "agent.read", pick(args, &["from", "count"])),
-        "list_questions" => exec(b, "agent.questions", pick(args, &["status"])),
+        "list_documents" => exec_with(b, "agent.documents", json!({}), args),
+        "attach" => exec_with(b, "agent.attach", pick(args, &["label"]), args),
+        "detach" => exec_with(b, "agent.detach", pick(args, &["listener"]), args),
+        "get_context" => exec_with(b, "agent.context", json!({}), args),
+        "read_document" | "read_range" => exec_with(b, "agent.read", pick(args, &["from", "count"]), args),
+        "list_questions" => exec_with(b, "agent.questions", pick(args, &["status"]), args),
         "wait_for_questions" => {
             let secs = args.get("timeout_seconds").and_then(Value::as_f64).filter(|x| x.is_finite()).unwrap_or(25.0).clamp(0.0, 50.0);
             let mut polls = (secs * 2.0) as u32;
             loop {
-                let v = exec(b, "agent.questions", json!({"status": "pending", "waiting": true}))?;
+                let v = exec_with(b, "agent.questions", json!({"status": "pending", "waiting": true}), args)?;
                 if v.as_array().is_some_and(|a| !a.is_empty()) || polls == 0 {
                     return Ok(v);
                 }
@@ -157,12 +191,12 @@ pub fn call(b: &mut dyn Backend, name: &str, args: &Value) -> Result<Value, Stri
                 std::thread::sleep(std::time::Duration::from_millis(500));
             }
         }
-        "claim_question" => exec(b, "agent.claim", pick(args, &["id"])),
-        "answer_question" => exec(b, "agent.answer", pick(args, &["id", "text", "links"])),
-        "add_note" => exec(b, "agent.note", pick(args, &["paragraph", "quote", "occurrence", "text", "title", "kind", "links"])),
-        "log_decision" => exec(b, "agent.decision", pick(args, &["text", "paragraph", "quote", "source"])),
-        "get_layer" => exec(b, "agent.layer", json!({})),
-        "run_command" => exec(b, "agent.exec", pick(args, &["command", "params", "at", "reason", "source"])),
+        "claim_question" => exec_with(b, "agent.claim", pick(args, &["id"]), args),
+        "answer_question" => exec_with(b, "agent.answer", pick(args, &["id", "text", "links"]), args),
+        "add_note" => exec_with(b, "agent.note", pick(args, &["paragraph", "quote", "occurrence", "text", "title", "kind", "links"]), args),
+        "log_decision" => exec_with(b, "agent.decision", pick(args, &["text", "paragraph", "quote", "source"]), args),
+        "get_layer" => exec_with(b, "agent.layer", json!({}), args),
+        "run_command" => exec_with(b, "agent.exec", pick(args, &["command", "params", "at", "reason", "source"]), args),
         "list_commands" => {
             let all = b.call("engine.commands", json!({}))?;
             let q = args.get("search").and_then(Value::as_str).unwrap_or("").to_lowercase();

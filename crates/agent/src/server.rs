@@ -71,6 +71,8 @@ pub fn start(port: u16, connect: Connector) -> std::io::Result<u16> {
 struct Request {
     method: String,
     path: String,
+    /// The query string (after `?`), undecoded.
+    query: String,
     headers: Vec<(String, String)>,
     body: Vec<u8>,
 }
@@ -101,7 +103,9 @@ fn read_request(r: &mut BufReader<TcpStream>) -> Option<Request> {
     let mut lines = head.lines();
     let mut first = lines.next()?.split_whitespace();
     let method = first.next()?.to_string();
-    let path = first.next()?.split('?').next().unwrap_or("/").to_string();
+    let target = first.next()?;
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    let (path, query) = (path.to_string(), query.to_string());
     let headers: Vec<(String, String)> = lines.filter_map(|l| l.split_once(':').map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))).collect();
     let len = headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("content-length")).and_then(|(_, v)| v.parse::<usize>().ok()).unwrap_or(0);
     if len > MAX_BODY {
@@ -109,7 +113,7 @@ fn read_request(r: &mut BufReader<TcpStream>) -> Option<Request> {
     }
     let mut body = vec![0; len];
     r.read_exact(&mut body).ok()?;
-    Some(Request { method, path, headers, body })
+    Some(Request { method, path, query, headers, body })
 }
 
 fn respond(w: &mut TcpStream, status: &str, ctype: &str, body: &[u8]) -> std::io::Result<()> {
@@ -152,7 +156,7 @@ fn serve(stream: TcpStream, connect: &Connector) {
             }
             ("DELETE", "/mcp") => respond(&mut w, "200 OK", "text/plain", b""),
             ("GET", "/events") => {
-                events(w, connect);
+                events(w, connect, query_param(&req.query, "document"));
                 return;
             }
             ("GET", "/health") => respond(&mut w, "200 OK", "text/plain", b"ok"),
@@ -210,6 +214,8 @@ pub fn event_line(q: &Value) -> Option<Value> {
         "quote": q.get("quote"),
         "question": q.get("text"),
         "kind": q.get("kind").and_then(Value::as_str).unwrap_or("question"),
+        "document": q.get("document"),
+        "documentTitle": q.get("documentTitle"),
         "hint": if q.get("kind").and_then(Value::as_str) == Some("ping") {
             "a connection check: answer_question with \"here\" at once"
         } else {
@@ -219,7 +225,41 @@ pub fn event_line(q: &Value) -> Option<Value> {
 }
 
 /// Streams new pending questions, one JSON object per line, until the client goes away.
-fn events(mut w: TcpStream, connect: &Connector) {
+/// A query parameter, percent-decoded.
+pub fn query_param(query: &str, name: &str) -> Option<String> {
+    query.split('&').filter_map(|kv| kv.split_once('=')).find(|(k, _)| *k == name).map(|(_, v)| percent_decode(v))
+}
+
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while let Some(&c) = b.get(i) {
+        let hex = |j: usize| b.get(j).and_then(|x| (*x as char).to_digit(16));
+        match (c, hex(i + 1), hex(i + 2)) {
+            (b'%', Some(h), Some(l)) => {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+            }
+            (b'+', _, _) => {
+                out.push(b' ');
+                i += 1;
+            }
+            _ => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Whether a question belongs on a stream filtered to `document`.
+pub fn for_document(q: &Value, document: Option<&str>) -> bool {
+    document.is_none_or(|d| q.get("document").and_then(Value::as_str) == Some(d))
+}
+
+fn events(mut w: TcpStream, connect: &Connector, document: Option<String>) {
     let _listening = crate::presence::Listening::new(crate::presence::Stream::Events);
     if w.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n").is_err() {
         return;
@@ -234,7 +274,7 @@ fn events(mut w: TcpStream, connect: &Connector) {
                 json!({"command": "agent.questions", "params": {"status": "pending", "actor": "agent", "masked": true, "poll": true}}),
             ) {
                 Ok(Value::Array(list)) => {
-                    for q in list {
+                    for q in list.into_iter().filter(|q| for_document(q, document.as_deref())) {
                         let Some(line) = event_line(&q) else { continue };
                         let id = line.get("id").and_then(Value::as_str).unwrap_or("").to_string();
                         if !seen.insert(id) {

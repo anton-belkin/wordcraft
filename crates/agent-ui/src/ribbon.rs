@@ -9,6 +9,7 @@
 
 use egui::{Align2, Color32, CornerRadius, Rect, Response, Sense, Ui, pos2, vec2};
 use serde_json::json;
+use wordcraft_agent::aitocraft;
 use wordcraft_agent::anchor;
 use wordcraft_agent::cowork::{self, Configured, State};
 use wordcraft_agent::layer::QuestionStatus;
@@ -292,7 +293,7 @@ fn dot(p: &egui::Painter, c: egui::Pos2, kind: Dot, color: Color32) {
     }
 }
 
-/// The status: indicator, line, sub-line, tooltip.
+/// The status of this document's connection: indicator, line, sub-line, tooltip.
 fn status_view(app: &WordApp, t: &Tokens) -> (Dot, Color32, String, String, String) {
     let p = palette(t);
     let red = Color32::from_rgb(0xC4, 0x2B, 0x1C);
@@ -300,34 +301,46 @@ fn status_view(app: &WordApp, t: &Tokens) -> (Dot, Color32, String, String, Stri
     let ping = wordcraft_agent::ping(&app.session);
     let bg = runner::running(&app.session);
     let l = presence::listeners(bg);
+    let attached = presence::listeners_of(&wordcraft_agent::document_id(&app.session));
     let last = wordcraft_agent::last_agent_call_ms();
     let mut tip = String::new();
+    for a in &attached {
+        tip.push_str(&format!("Attached: {} (seen {}). ", a.label, ago(a.last_seen)));
+    }
     if l.any() {
         tip.push_str(&format!("Listening: {}. ", l.describe()));
     }
     tip.push_str(&if last > 0 { format!("The agent's last tool call: {}.", ago(last)) } else { "No tool call from an agent yet.".into() });
     let mode = presence::mode();
-    let (d, c, line, sub) = match presence::status(ping.as_ref(), &l, now) {
-        presence::Status::Answering { checked_at, secs } => {
-            (Dot::Full, p.answered, "Agent answering".to_string(), format!("checked {} · answered in {secs} s", ago(checked_at)))
+    let (d, c, line, sub) = match presence::status(ping.as_ref(), &attached, &l, now) {
+        presence::Status::Answering { checked_at, secs, by } => {
+            let line = if by.is_empty() { "Agent answering".to_string() } else { format!("Agent answering: {by}") };
+            (Dot::Full, p.answered, line, format!("checked {} · answered in {secs} s", ago(checked_at)))
         }
         presence::Status::Checking => {
             let n = ping.as_ref().map_or(0, |x| now.saturating_sub(x.asked_at) / 1000);
             (Dot::Half, p.pending, "Checking…".to_string(), format!("asked {n} s ago, waiting for an answer"))
         }
         presence::Status::NoAnswer => {
-            let sub = if l.any() { "a listener is connected, but nobody answered" } else { "nobody answered within a minute" };
+            let sub =
+                if l.any() || !attached.is_empty() { "a listener is connected, but nobody answered" } else { "nobody answered within a minute" };
             (Dot::Cross, red, "No answer to check".to_string(), sub.to_string())
         }
-        presence::Status::Listener => (Dot::Half, p.pending, "Listener connected".to_string(), format!("not checked · {}", l.describe())),
+        presence::Status::Attached { label, last_seen, others } => {
+            let more = if others > 0 { format!(" +{others}") } else { String::new() };
+            (Dot::Full, p.answered, format!("Listening: {label}{more}"), format!("seen {} · not checked", ago(last_seen)))
+        }
+        presence::Status::Listener => {
+            (Dot::Half, p.pending, "Listener connected".to_string(), format!("not attached, not checked · {}", l.describe()))
+        }
         presence::Status::Nobody => {
             let sub = match mode {
-                Mode::Connect => "connect an agent: Copy ▸ Claude Code or Cowork",
-                Mode::Channel => "start Claude Code with the channel (Copy)",
+                Mode::Connect => "questions queue here · Copy phrase for Claude",
+                Mode::Channel => "questions queue here · start Claude Code (Copy)",
                 Mode::Background => "the agent starts with the first question",
                 Mode::Off => "",
             };
-            (Dot::Ring, t.text_disabled, "Nobody is listening".to_string(), sub.to_string())
+            (Dot::Ring, t.text_disabled, "Nobody is listening for this document".to_string(), sub.to_string())
         }
         presence::Status::Off => (Dot::Ring, t.text_disabled, "Agent connection off".to_string(), "choose a mode to let an agent in".to_string()),
     };
@@ -347,37 +360,69 @@ fn copy_item(ui: &mut Ui, acts: &mut Vec<Act>, label: &str, text: String) {
     }
 }
 
+/// "Install AItoCraft in Claude Desktop": runs the hub's installer when its binary is found.
+fn install_item(ui: &mut Ui, acts: &mut Vec<Act>) {
+    let bin = aitocraft::binary();
+    let state = aitocraft::install_state();
+    let note = match &state {
+        aitocraft::Install::Running => " (installing…)",
+        aitocraft::Install::Done(_) => " (done)",
+        aitocraft::Install::Failed(_) => " (failed)",
+        aitocraft::Install::Idle => "",
+    };
+    let tip = match (&state, &bin) {
+        (aitocraft::Install::Done(m) | aitocraft::Install::Failed(m), _) => m.clone(),
+        (_, Some(b)) => format!(
+            "Runs {} --install-desktop: AItoCraft becomes the one MCP server Claude Desktop and Cowork use for every Craft document",
+            b.display()
+        ),
+        (_, None) => "AItoCraft isn't installed yet: build it (~/aitocraft) or put `aitocraft` on PATH".into(),
+    };
+    let can = bin.is_some() && state != aitocraft::Install::Running;
+    if ui
+        .add_enabled(can, egui::Button::new(format!("Install AItoCraft in Claude Desktop{note}")))
+        .on_hover_text(tip)
+        .on_disabled_hover_text("AItoCraft isn't installed yet: build it (~/aitocraft) or put `aitocraft` on PATH")
+        .clicked()
+    {
+        aitocraft::install_desktop();
+        acts.push(Act::Status("Installing AItoCraft in Claude Desktop… then quit Claude (Cmd+Q) and open it again".into()));
+        ui.close();
+    }
+}
+
 fn connection(ui: &mut Ui, app: &mut WordApp, t: &Tokens, acts: &mut Vec<Act>) {
-    let p = palette(t);
     let mode = presence::mode();
     let url = crate::server_url().unwrap_or("http://127.0.0.1:7982/mcp").to_string();
     let base = url.trim_end_matches("/mcp").to_string();
     let entry = crate::stdio_entry();
     let exe = entry.as_ref().and_then(|e| e.get("command")).and_then(|c| c.as_str()).unwrap_or("wordcraft").to_string();
+    let title = wordcraft_agent::document_title(&app.session);
+    let doc_id = wordcraft_agent::document_id(&app.session);
     let (d, color, line, sub, tip) = status_view(app, t);
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing = vec2(2.0, 1.0);
-        // The status, big.
-        let w = 240.0;
+        // The status of this document, big.
+        let w = 300.0;
         let (r, resp) = ui.allocate_exact_size(vec2(w, 36.0), Sense::hover());
         dot(ui.painter(), pos2(r.min.x + 8.0, r.min.y + 10.0), d, color);
-        ui.painter().text(pos2(r.min.x + 20.0, r.min.y + 10.0), Align2::LEFT_CENTER, &line, wordcraft_ui_egui::theme::semibold(12.5), t.text);
-        ui.painter().text(pos2(r.min.x + 20.0, r.min.y + 27.0), Align2::LEFT_CENTER, clip(&sub, 46), regular(10.5), t.text_dim);
+        ui.painter().text(pos2(r.min.x + 20.0, r.min.y + 10.0), Align2::LEFT_CENTER, clip(&line, 44), wordcraft_ui_egui::theme::semibold(12.5), t.text);
+        ui.painter().text(pos2(r.min.x + 20.0, r.min.y + 27.0), Align2::LEFT_CENTER, clip(&sub, 54), regular(10.5), t.text_dim);
         resp.on_hover_text(&tip);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing = vec2(2.0, 0.0);
             let can_check = mode != Mode::Off;
-            if small(ui, "check", "Check", can_check, "Ask \"is anyone there?\": a connection check the agent answers at once with \"here\" (never shown as a question)").clicked() {
+            if small(ui, "check", "Check", can_check, "Ask \"is anyone there?\": a connection check this document's listeners answer at once with \"here\" (never shown as a question)").clicked() {
                 acts.push(Act::Run("agent.ping", json!({})));
             }
             // The mode.
-            let m = small(ui, "dropdown", &format!("Mode: {}", clip(mode.label(), 22)), true, "How the agent comes in");
+            let m = small(ui, "dropdown", &format!("Mode: {}", clip(mode.short(), 24)), true, "How the agent comes in");
             let close = wants_menu("none");
             if wants_menu("mode") {
                 egui::Popup::open_id(ui.ctx(), egui::Popup::default_response_id(&m));
             }
             egui::Popup::menu(&m).show(|ui| {
-                ui.set_min_width(300.0);
+                ui.set_min_width(440.0);
                 for x in Mode::ALL {
                     let mut job = egui::text::LayoutJob::default();
                     job.append(x.label(), 0.0, egui::TextFormat { font_id: wordcraft_ui_egui::theme::semibold(12.0), color: t.text, ..Default::default() });
@@ -398,56 +443,39 @@ fn connection(ui: &mut Ui, app: &mut WordApp, t: &Tokens, acts: &mut Vec<Act>) {
                 egui::Popup::open_id(ui.ctx(), egui::Popup::default_response_id(&c));
             }
             egui::Popup::menu(&c).show(|ui| {
-                ui.set_min_width(270.0);
+                ui.set_min_width(290.0);
+                let hub = aitocraft::binary();
                 match mode {
                     Mode::Connect => {
-                        copy_item(ui, acts, "Claude Code: add MCP server", format!("claude mcp add --transport http wordcraft {url}"));
-                        copy_item(ui, acts, "Monitor command", format!("curl -sN {base}/events"));
-                        let state = cowork::state();
-                        let configured = match (&entry, cowork::config_path()) {
-                            (Some(e), Some(path)) => cowork::configured(&path, e),
-                            _ => Configured::NoClaude,
-                        };
-                        let note = match (&state, &configured) {
-                            (State::Waiting, _) => " (quit Claude: Cmd+Q)",
-                            (State::Done { .. }, _) => " (open Claude)",
-                            (State::Failed(_), _) => " (failed)",
-                            (_, Configured::Yes) => " (connected)",
-                            _ => "",
-                        };
-                        let can = entry.is_some() && state != State::Waiting;
-                        if ui
-                            .add_enabled(can, egui::Button::new(format!("Connect Cowork…{note}")))
-                            .on_hover_text("Adds WordCraft to Claude Desktop (other servers stay). Claude rewrites its settings when it quits, so if it is open WordCraft waits for you to quit it with Cmd+Q, adds itself, and you open Claude again.")
-                            .clicked()
-                            && let Some(e) = entry.clone()
-                        {
-                            cowork::connect(e);
-                            let msg = match cowork::state() {
-                                State::Waiting => "Quit Claude Desktop with Cmd+Q: WordCraft adds itself as soon as it has quit. Then open Claude again.".to_string(),
-                                State::Done { .. } => "Added to Claude Desktop: open Claude, the wordcraft tools are in Cowork and chats.".to_string(),
-                                State::Failed(e) => e,
-                                State::Idle => String::new(),
-                            };
-                            acts.push(Act::Status(msg));
-                            ui.close();
-                        }
+                        copy_item(ui, acts, "Copy phrase for Claude", aitocraft::phrase(&title));
+                        install_item(ui, acts);
+                        copy_item(ui, acts, "Claude Code: add AItoCraft", aitocraft::claude_code_command(hub.as_deref()));
                     }
                     Mode::Channel => {
-                        copy_item(ui, acts, "1. Add channel server", format!("claude mcp add {} -- '{}' --agent-stdio", wordcraft_agent::channel::SERVER_NAME, exe.replace('\'', "'\\''")));
-                        copy_item(ui, acts, "2. Start Claude Code with the channel", format!("claude --dangerously-load-development-channels server:{}", wordcraft_agent::channel::SERVER_NAME));
+                        copy_item(ui, acts, "Copy phrase for Claude", aitocraft::phrase(&title));
+                        copy_item(ui, acts, "Claude Code: add AItoCraft", aitocraft::claude_code_command(hub.as_deref()));
+                        copy_item(ui, acts, "Start Claude Code with the channel", aitocraft::CHANNEL_COMMAND.to_string());
                     }
                     Mode::Background => {
                         let st = runner::status(&app.session);
-                        if ui.button("Open session in Claude Desktop").on_hover_text("Claude Desktop ▸ Code: the session named “WordCraft · <file>”, in the document's folder").clicked() {
+                        if ui.button("Open session in Claude Desktop").on_hover_text("Claude Desktop ▸ Code: the session named “WordCraft · <file>”").clicked() {
                             let _ = std::process::Command::new("open").args(["-a", "Claude"]).spawn();
-                            let at = st.as_ref().map(|s| s.cwd.clone()).filter(|c| !c.is_empty()).unwrap_or_else(|| "the document's folder".into());
-                            acts.push(Act::Status(format!("In Claude Desktop: Code ▸ {at} ▸ “WordCraft · …”")));
+                            let at = st.as_ref().map(|s| s.cwd.clone()).filter(|c| !c.is_empty()).unwrap_or_else(|| "agent-sessions".into());
+                            acts.push(Act::Status(format!("In Claude Desktop: Code ▸ {at} ▸ “WordCraft · {title}”")));
                             ui.close();
                         }
                         if ui.button("New session").on_hover_text("A fresh session for this document, started from a summary of its history").clicked() {
                             acts.push(Act::Run("agent.agentReset", json!({})));
                             ui.close();
+                        }
+                        let mut folder = runner::config().document_folder;
+                        if ui
+                            .checkbox(&mut folder, "Run in the document's folder")
+                            .on_hover_text("The agent's project becomes the document's folder: that folder's CLAUDE.md, memory and settings become its context, and its sessions sit with the folder's in Claude Desktop. Off: a neutral, empty folder (ArtCraft/agent-sessions).")
+                            .changed()
+                        {
+                            runner::set_document_folder(folder);
+                            acts.push(Act::Run("agent.agentStop", json!({})));
                         }
                     }
                     Mode::Off => {
@@ -456,18 +484,22 @@ fn connection(ui: &mut Ui, app: &mut WordApp, t: &Tokens, acts: &mut Vec<Act>) {
                 }
                 ui.separator();
                 ui.menu_button("Details", |ui| {
-                    ui.set_min_width(320.0);
+                    ui.set_min_width(340.0);
                     let small_text = |ui: &mut Ui, s: String| {
                         ui.label(egui::RichText::new(s).small().color(t.text_dim));
                     };
+                    small_text(ui, format!("Document: {doc_id}"));
                     small_text(ui, format!("Server: {url}"));
-                    small_text(ui, format!("Events: {base}/events · health: {base}/health"));
-                    if let Some(a) = entry.as_ref().and_then(|e| e.get("args")).and_then(|a| a.as_array()) {
-                        let args: Vec<&str> = a.iter().filter_map(|x| x.as_str()).collect();
-                        small_text(ui, format!("Stdio: {exe} {}", args.join(" ")));
-                    }
+                    small_text(ui, format!("Events: {base}/events?document={doc_id}"));
                     small_text(ui, format!("Mode: {} ({})", mode.label(), mode.id()));
                     small_text(ui, tip.clone());
+                    match aitocraft::binary() {
+                        Some(b) => small_text(ui, format!("AItoCraft: {}", b.display())),
+                        None => small_text(ui, "AItoCraft: not found (PATH, ~/aitocraft/target/release)".into()),
+                    }
+                    if let Some(f) = wordcraft_agent::registry::file() {
+                        small_text(ui, format!("Registry: {}", f.display()));
+                    }
                     if let Some(st) = runner::status(&app.session) {
                         small_text(ui, format!("Background agent: {} · {} turn(s) · ${:.2}", if st.running { "running" } else { "stopped" }, st.turns, st.cost_usd));
                         if !st.cwd.is_empty() {
@@ -480,12 +512,42 @@ fn connection(ui: &mut Ui, app: &mut WordApp, t: &Tokens, acts: &mut Vec<Act>) {
                             copy_item(ui, acts, "Copy: continue the session by hand", runner::resume_command(&st));
                         }
                     }
-                    if let Some(path) = cowork::config_path() {
-                        small_text(ui, format!("Claude Desktop settings: {}", path.display()));
+                    ui.separator();
+                    ui.label(egui::RichText::new("Without AItoCraft (this app only)").small().strong());
+                    copy_item(ui, acts, "Claude Code: add WordCraft over HTTP", format!("claude mcp add --transport http wordcraft {url}"));
+                    copy_item(ui, acts, "Monitor command", format!("curl -sN '{base}/events?document={doc_id}'"));
+                    copy_item(ui, acts, "Claude Code channel: add WordCraft (stdio)", format!("claude mcp add {} -- '{}' --agent-stdio", wordcraft_agent::channel::SERVER_NAME, exe.replace('\'', "'\\''")));
+                    let state = cowork::state();
+                    let configured = match (&entry, cowork::config_path()) {
+                        (Some(e), Some(path)) => cowork::configured(&path, e),
+                        _ => Configured::NoClaude,
+                    };
+                    let note = match (&state, &configured) {
+                        (State::Waiting, _) => " (quit Claude: Cmd+Q)",
+                        (State::Done { .. }, _) => " (open Claude)",
+                        (State::Failed(_), _) => " (failed)",
+                        (_, Configured::Yes) => " (connected)",
+                        _ => "",
+                    };
+                    let can = entry.is_some() && state != State::Waiting;
+                    if ui
+                        .add_enabled(can, egui::Button::new(format!("Claude Desktop: add WordCraft (--agent-stdio){note}")))
+                        .on_hover_text("The fallback without AItoCraft: adds `wordcraft --agent-stdio` to Claude Desktop. If Claude is open, WordCraft waits for you to quit it (Cmd+Q), adds itself, and you open Claude again.")
+                        .clicked()
+                        && let Some(e) = entry.clone()
+                    {
+                        cowork::connect(e);
+                        let msg = match cowork::state() {
+                            State::Waiting => "Quit Claude Desktop with Cmd+Q: WordCraft adds itself as soon as it has quit. Then open Claude again.".to_string(),
+                            State::Done { .. } => "Added to Claude Desktop: open Claude.".to_string(),
+                            State::Failed(e) => e,
+                            State::Idle => String::new(),
+                        };
+                        acts.push(Act::Status(msg));
+                        ui.close();
                     }
                 });
             });
         });
     });
-    let _ = p;
 }

@@ -1,0 +1,28 @@
+{"start": "demo", "width": 1440, "height": 900}
+{"serve": 7994}
+{"cmd": "ui.tab", "params": {"tab": "Agent"}}
+{"shot": "SHOTS/a1-nobody.png"}
+{"exec": "curl -s -X POST http://127.0.0.1:7994/mcp -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"list_documents\",\"arguments\":{}}}'"}
+{"exec": "curl -s -X POST http://127.0.0.1:7994/mcp -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"attach\",\"arguments\":{\"label\":\"Cowork · Acme\"}}}' | python3 -c 'import json,sys; print(json.loads(json.load(sys.stdin)[\"result\"][\"content\"][0][\"text\"])[\"listener\"])' > SHOTS/listener.txt; cat SHOTS/listener.txt"}
+{"steps": 30}
+{"shot": "SHOTS/a2-listening.png"}
+{"exec": "sleep 2; cat SHOTS/registry/*.json"}
+{"cmd": "agent.ping", "params": {}}
+{"exec": "L=$(cat SHOTS/listener.txt); R=$(curl -s -X POST http://127.0.0.1:7994/mcp -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"wait_for_questions\",\"arguments\":{\"listener\":\"'$L'\",\"timeout_seconds\":5}}}'); printf %s \"$R\" | cut -c1-300; echo; ID=$(printf %s \"$R\" | python3 -c 'import json,sys; print(json.loads(json.load(sys.stdin)[\"result\"][\"content\"][0][\"text\"])[0][\"id\"])'); curl -s -X POST http://127.0.0.1:7994/mcp -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"answer_question\",\"arguments\":{\"id\":\"'$ID'\",\"text\":\"here\",\"listener\":\"'$L'\"}}}'"}
+{"shot": "SHOTS/a3-answering.png"}
+{"exec": "curl -s -X POST http://127.0.0.1:7994/mcp -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/call\",\"params\":{\"name\":\"get_context\",\"arguments\":{\"document\":\"gridcraft:1:1\"}}}'"}
+{"menu": "mode"}
+{"shot": "SHOTS/a4-mode-menu.png"}
+{"menu": "none"}
+{"menu": "copy"}
+{"shot": "SHOTS/a5-copy-desktop.png"}
+{"menu": "none"}
+{"cmd": "agent.agentMode", "params": {"mode": "channel"}}
+{"menu": "copy"}
+{"shot": "SHOTS/a6-copy-channel.png"}
+{"menu": "none"}
+{"cmd": "agent.agentMode", "params": {"mode": "background"}}
+{"menu": "copy"}
+{"shot": "SHOTS/a7-copy-background.png"}
+{"menu": "none"}
+{"cmd": "agent.agentMode", "params": {"mode": "connect"}}

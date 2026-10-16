@@ -94,6 +94,7 @@ impl eframe::App for App {
         self.3.show(frame);
     }
     fn on_exit(&mut self) {
+        agent::exit(); // fork:agent
         print::finish_pending_jobs();
         save_prefs(&self.0);
         if let Some(key_file) = &self.2 {
@@ -121,6 +122,7 @@ fn schedule_macos_terminate(app: &WordApp, key_file: Option<&control_server::Key
     }
     log::info!("window close: quitting");
     // This path can bypass on_exit. Join the owned workers before termination and cleanup.
+    agent::exit(); // fork:agent
     print::finish_pending_jobs();
     save_prefs(app);
     if let Some(key_file) = key_file {

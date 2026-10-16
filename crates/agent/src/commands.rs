@@ -47,6 +47,11 @@ pub fn specs() -> Vec<CommandSpec> {
             .pure(),
         c("agent.decision", "Log Decision", LOC, decision).params(r#"{"text": string, "paragraph"?: number, "quote"?: string, "source"?: string}"#).pure(),
         c("agent.layer", "Agent Layer", LOC, layer_cmd).params("{} → questions, notes, client-data ranges, history (masked)").pure(),
+        c("agent.documents", "Agent Documents", LOC, documents).params("{} → the open document as the AItoCraft registry describes it").pure(),
+        c("agent.attach", "Attach a Conversation", LOC, attach)
+            .params(r#"{"document"?: id, "label": string} → {listener, document, title, app}: a conversation that listens for this document's questions"#)
+            .pure(),
+        c("agent.detach", "Detach a Conversation", LOC, detach).params(r#"{"listener": string}"#).pure(),
         c("agent.ping", "Check the Agent Connection", LOC, ping)
             .params(r#"{} — asks "is anyone there?" (a system question with kind ping: never shown, never saved)"#)
             .pure(),
@@ -343,6 +348,7 @@ fn masked(view: &View, v: &Json, mut out: Json) -> CmdResult {
 
 fn context(s: &mut Session, v: &Json) -> CmdResult {
     gate(v)?;
+    doc_check(s, v)?;
     let view = crate::view(s);
     let l = crate::layer(s);
     let doc = crate::agent_doc(s);
@@ -373,6 +379,7 @@ fn context(s: &mut Session, v: &Json) -> CmdResult {
 
 fn read(s: &mut Session, v: &Json) -> CmdResult {
     gate(v)?;
+    doc_check(s, v)?;
     let view = crate::view(s);
     let from = p::u64(v, "from").unwrap_or(0).min(usize::MAX as u64) as usize;
     let count = p::u64(v, "count").unwrap_or(400).clamp(1, 2_000) as usize;
@@ -420,12 +427,53 @@ fn status_matches(q: &Question, want: &str) -> bool {
     }
 }
 
-/// The agent's calls are refused while the connection is off.
+/// The agent's calls are refused while the connection is off; a call naming another document is
+/// refused too (a WordCraft window holds one document).
 fn gate(v: &Json) -> Result<(), CmdError> {
     if is_agent(v) && crate::presence::mode() == crate::presence::Mode::Off {
         return Err(CmdError::Disabled("the agent connection is off in WordCraft (Agent tab ▸ Connection ▸ Mode)".into()));
     }
     Ok(())
+}
+
+/// `document` (a registry id), when given, must be this one.
+fn doc_check(s: &Session, v: &Json) -> Result<(), CmdError> {
+    match p::str(v, "document") {
+        Some(d) if d != crate::document_id(s) => Err(CmdError::Params(format!("document {d} is not open in {}", crate::APP_TITLE))),
+        _ => Ok(()),
+    }
+}
+
+/// A call carrying `listener` refreshes it; an unknown one must attach again.
+fn listener_check(v: &Json) -> Result<Option<crate::presence::Listener>, CmdError> {
+    match p::str(v, "listener") {
+        Some(l) => crate::presence::touch(l).map(Some).ok_or_else(|| {
+            CmdError::Params(format!("listener {l} is not attached (dropped after 90 s without a call, or WordCraft restarted): attach again"))
+        }),
+        None => Ok(None),
+    }
+}
+
+fn documents(s: &mut Session, v: &Json) -> CmdResult {
+    gate(v)?;
+    doc_check(s, v)?;
+    let d = crate::document_json(s);
+    masked(&crate::view(s), v, json!([d]))
+}
+
+fn attach(s: &mut Session, v: &Json) -> CmdResult {
+    gate(v)?;
+    doc_check(s, v)?;
+    let label = p::str(v, "label").map(str::trim).filter(|l| !l.is_empty()).unwrap_or("an agent").to_string();
+    let l = crate::presence::attach(&crate::document_id(s), &label);
+    let out = json!({"listener": l.listener, "document": l.document, "title": crate::document_title(s), "app": crate::APP});
+    masked(&crate::view(s), v, out)
+}
+
+fn detach(_s: &mut Session, v: &Json) -> CmdResult {
+    gate(v)?;
+    let id = text_p(v, "listener", 100)?;
+    Ok(json!({"listener": id, "detached": crate::presence::detach(&id)}))
 }
 
 fn ping_matches(p: &crate::presence::Ping, want: &str) -> bool {
@@ -438,6 +486,8 @@ fn ping_matches(p: &crate::presence::Ping, want: &str) -> bool {
 
 fn questions(s: &mut Session, v: &Json) -> CmdResult {
     gate(v)?;
+    doc_check(s, v)?;
+    listener_check(v)?;
     let l = crate::layer(s);
     let want = p::str(v, "status").unwrap_or("all");
     // The connection check first: an agent answers it at once.
@@ -449,11 +499,16 @@ fn questions(s: &mut Session, v: &Json) -> CmdResult {
         .map(|p| json!({"id": p.id, "kind": "ping", "text": crate::presence::PING_TEXT, "status": p.status(), "askedAt": p.asked_at}))
         .into_iter()
         .collect();
-    if !l.questions.iter().any(|q| status_matches(q, want)) {
-        return Ok(Json::Array(list));
-    }
     let view = crate::view(s);
     list.extend(l.questions.iter().filter(|q| status_matches(q, want)).map(|q| question_json(s, &view, q)));
+    // Every question says which document it is in (the hub routes by it).
+    let (doc, title) = (crate::document_id(s), crate::document_title(s));
+    for q in &mut list {
+        if let Some(o) = q.as_object_mut() {
+            o.insert("document".into(), json!(doc));
+            o.insert("documentTitle".into(), json!(title));
+        }
+    }
     masked(&view, v, Json::Array(list))
 }
 
@@ -470,14 +525,15 @@ fn ping(s: &mut Session, v: &Json) -> CmdResult {
     Ok(json!({"id": id}))
 }
 
-/// Claims or answers the connection check, if `id` is it.
-fn ping_reply(s: &mut Session, id: &str, answer: bool) -> bool {
+/// Claims or answers the connection check, if `id` is it; `by` is the listener that did.
+fn ping_reply(s: &mut Session, id: &str, answer: bool, by: Option<&crate::presence::Listener>) -> bool {
     let Some(st) = s.ext.get_mut::<crate::State>() else { return false };
     match st.ping.as_mut() {
         Some(p) if p.id == id => {
             p.claimed = true;
             if answer && p.answered_at.is_none() {
                 p.answered_at = Some(crate::now_ms());
+                p.answered_by = by.map(|l| l.label.clone()).unwrap_or_default();
             }
             true
         }
@@ -487,8 +543,10 @@ fn ping_reply(s: &mut Session, id: &str, answer: bool) -> bool {
 
 fn claim(s: &mut Session, v: &Json) -> CmdResult {
     gate(v)?;
+    doc_check(s, v)?;
+    let by = listener_check(v)?;
     let id = text_p(v, "id", 100)?;
-    if ping_reply(s, &id, false) {
+    if ping_reply(s, &id, false, by.as_ref()) {
         return Ok(json!({"id": id}));
     }
     let r = crate::update(s, |l| match l.questions.iter_mut().find(|q| q.id == id) {
@@ -504,9 +562,11 @@ fn claim(s: &mut Session, v: &Json) -> CmdResult {
 
 fn answer(s: &mut Session, v: &Json) -> CmdResult {
     gate(v)?;
+    doc_check(s, v)?;
+    let by = listener_check(v)?;
     let id = text_p(v, "id", 100)?;
     let text = text_p(v, "text", 20_000)?;
-    if ping_reply(s, &id, true) {
+    if ping_reply(s, &id, true, by.as_ref()) {
         return Ok(json!({"id": id, "check": "answered"}));
     }
     let links = links_p(v);
@@ -534,6 +594,7 @@ fn answer(s: &mut Session, v: &Json) -> CmdResult {
 
 fn note(s: &mut Session, v: &Json) -> CmdResult {
     gate(v)?;
+    doc_check(s, v)?;
     let text = text_p(v, "text", 20_000)?;
     let span = as_agent(v, || place(s, v))?;
     let kind = match p::str(v, "kind") {
@@ -554,6 +615,7 @@ fn note(s: &mut Session, v: &Json) -> CmdResult {
 
 fn decision(s: &mut Session, v: &Json) -> CmdResult {
     gate(v)?;
+    doc_check(s, v)?;
     let text = text_p(v, "text", 4_000)?;
     let anchor = if p::u64(v, "paragraph").is_some() || p::str(v, "quote").is_some() {
         let span = as_agent(v, || place(s, v))?;
@@ -605,6 +667,7 @@ pub fn layer_json(s: &Session, v: &Json) -> CmdResult {
 
 fn layer_cmd(s: &mut Session, v: &Json) -> CmdResult {
     gate(v)?;
+    doc_check(s, v)?;
     layer_json(s, v)
 }
 
@@ -659,6 +722,7 @@ fn private_fingerprint(s: &Session) -> Vec<(String, usize, bool)> {
 
 fn exec(s: &mut Session, v: &Json) -> CmdResult {
     gate(v)?;
+    doc_check(s, v)?;
     let command = text_p(v, "command", 200)?;
     let params = v.get("params").cloned().filter(Json::is_object).unwrap_or_else(|| json!({}));
     let Some(spec) = s.registry.get(&command).cloned() else { return Err(CmdError::Unknown(command)) };

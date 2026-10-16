@@ -11,6 +11,7 @@
 //!
 //! Also the connection mode: how the app brings the agent in. It is the app's, never the file's.
 
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 
 /// The check's text, as the agent reads it.
@@ -27,6 +28,8 @@ pub struct Ping {
     pub asked_at: u64,
     pub claimed: bool,
     pub answered_at: Option<u64>,
+    /// The listener that answered (its label), when the answer said.
+    pub answered_by: String,
 }
 
 impl Ping {
@@ -76,8 +79,17 @@ impl Mode {
     /// The list item.
     pub fn label(self) -> &'static str {
         match self {
-            Mode::Connect => "I connect my agent",
-            Mode::Channel => "Send to my Claude Code session",
+            Mode::Connect => "Claude Desktop / Cowork (AItoCraft)",
+            Mode::Channel => "My Claude Code session (AItoCraft channel)",
+            Mode::Background => "Background agent",
+            Mode::Off => "Off",
+        }
+    }
+    /// A short form for the ribbon.
+    pub fn short(self) -> &'static str {
+        match self {
+            Mode::Connect => "Claude Desktop / Cowork",
+            Mode::Channel => "My Claude Code session",
             Mode::Background => "Background agent",
             Mode::Off => "Off",
         }
@@ -85,9 +97,9 @@ impl Mode {
     /// One line of explanation under it.
     pub fn explain(self) -> &'static str {
         match self {
-            Mode::Connect => "MCP: Claude Code, Cowork or any client watches the questions",
-            Mode::Channel => "Questions arrive in your open Claude Code session (Channels)",
-            Mode::Background => "WordCraft runs Claude itself, one session per document",
+            Mode::Connect => "Say in a chat or Cowork project: we're working on this document",
+            Mode::Channel => "Questions arrive in your Claude Code session as they are asked",
+            Mode::Background => "The app runs Claude on your subscription. It sees only this document. Uses your limits.",
             Mode::Off => "No agent: questions wait, the agent's calls are refused",
         }
     }
@@ -207,6 +219,80 @@ pub fn listeners(background: bool) -> Listeners {
     }
 }
 
+// ---------------------------------------------------------------- listeners (AItoCraft attach)
+
+/// A conversation bound to a document (`attach`): who listens for that document's questions.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Listener {
+    pub listener: String,
+    pub document: String,
+    /// What the user sees: "Cowork · Acme", "Claude Code · gridcraft-fork".
+    pub label: String,
+    pub last_seen: u64,
+}
+
+/// A listener not seen for this long is dropped.
+pub const LISTENER_TTL_MS: u64 = 90_000;
+
+static LISTENERS: Mutex<Vec<Listener>> = Mutex::new(Vec::new());
+static NEXT_LISTENER: AtomicU64 = AtomicU64::new(1);
+
+fn listeners_lock() -> std::sync::MutexGuard<'static, Vec<Listener>> {
+    match LISTENERS.lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    }
+}
+
+fn prune(v: &mut Vec<Listener>, now: u64) {
+    v.retain(|l| now.saturating_sub(l.last_seen) < LISTENER_TTL_MS);
+}
+
+/// Binds a conversation to `document`.
+pub fn attach(document: &str, label: &str) -> Listener {
+    let now = crate::now_ms();
+    let n = NEXT_LISTENER.fetch_add(1, Ordering::Relaxed);
+    // Short and unguessable enough for a local id: the counter mixed with the clock.
+    let mix = (now ^ n.wrapping_mul(0x9E37_79B9_7F4A_7C15)).wrapping_mul(0xBF58_476D_1CE4_E5B9) >> 40;
+    let l = Listener {
+        listener: format!("L{:06x}{n}", mix & 0xff_ffff),
+        document: document.to_string(),
+        label: label.chars().take(120).collect(),
+        last_seen: now,
+    };
+    let mut v = listeners_lock();
+    prune(&mut v, now);
+    v.push(l.clone());
+    l
+}
+
+/// Removes a listener; whether it was there.
+pub fn detach(listener: &str) -> bool {
+    let mut v = listeners_lock();
+    let n = v.len();
+    v.retain(|l| l.listener != listener);
+    n != v.len()
+}
+
+/// A call carrying `listener`: it is still there. Its document, or `None` for one that was dropped.
+pub fn touch(listener: &str) -> Option<Listener> {
+    let now = crate::now_ms();
+    let mut v = listeners_lock();
+    prune(&mut v, now);
+    let l = v.iter_mut().find(|l| l.listener == listener)?;
+    l.last_seen = now;
+    Some(l.clone())
+}
+
+/// The live listeners of a document, most recently seen first.
+pub fn listeners_of(document: &str) -> Vec<Listener> {
+    let mut v = listeners_lock();
+    prune(&mut v, crate::now_ms());
+    let mut out: Vec<Listener> = v.iter().filter(|l| l.document == document).cloned().collect();
+    out.sort_by_key(|l| std::cmp::Reverse(l.last_seen));
+    out
+}
+
 /// The status line of the Agent tab.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Status {
@@ -214,11 +300,18 @@ pub enum Status {
     Answering {
         checked_at: u64,
         secs: u64,
+        by: String,
     },
     /// A check is out, no answer yet.
     Checking,
     /// A check went unanswered.
     NoAnswer,
+    /// A conversation is attached to this document.
+    Attached {
+        label: String,
+        last_seen: u64,
+        others: usize,
+    },
     /// A passive signal only.
     Listener,
     Nobody,
@@ -228,18 +321,21 @@ pub enum Status {
 /// A check answered this long ago still counts.
 const ANSWER_FRESH_MS: u64 = 15 * 60_000;
 
-pub fn status(ping: Option<&Ping>, l: &Listeners, now: u64) -> Status {
+pub fn status(ping: Option<&Ping>, attached: &[Listener], l: &Listeners, now: u64) -> Status {
     if mode() == Mode::Off {
         return Status::Off;
     }
     match ping {
         Some(p) if p.answered_at.is_some() && now.saturating_sub(p.asked_at) < ANSWER_FRESH_MS => {
             let secs = p.answered_at.unwrap_or(p.asked_at).saturating_sub(p.asked_at) / 1000;
-            return Status::Answering { checked_at: p.asked_at, secs };
+            return Status::Answering { checked_at: p.asked_at, secs, by: p.answered_by.clone() };
         }
         Some(p) if p.answered_at.is_none() && now.saturating_sub(p.asked_at) < PING_TIMEOUT_MS => return Status::Checking,
         Some(p) if p.answered_at.is_none() => return Status::NoAnswer,
         _ => {}
+    }
+    if let Some(first) = attached.first() {
+        return Status::Attached { label: first.label.clone(), last_seen: first.last_seen, others: attached.len() - 1 };
     }
     if l.any() { Status::Listener } else { Status::Nobody }
 }
@@ -252,17 +348,35 @@ mod tests {
     fn the_status_follows_the_check_then_the_listeners() {
         let l = Listeners::default();
         let now = 1_000_000;
-        assert_eq!(status(None, &l, now), Status::Nobody);
-        assert_eq!(status(None, &Listeners { events: 1, ..Default::default() }, now), Status::Listener);
+        assert_eq!(status(None, &[], &l, now), Status::Nobody);
+        assert_eq!(status(None, &[], &Listeners { events: 1, ..Default::default() }, now), Status::Listener);
+        let att = [Listener { listener: "L1".into(), document: "d".into(), label: "Cowork · Acme".into(), last_seen: now - 20_000 }];
+        assert_eq!(status(None, &att, &l, now), Status::Attached { label: "Cowork · Acme".into(), last_seen: now - 20_000, others: 0 });
         let mut p = Ping { id: "ping1".into(), asked_at: now - 5_000, ..Default::default() };
-        assert_eq!(status(Some(&p), &l, now), Status::Checking);
-        assert_eq!(status(Some(&p), &l, now + PING_TIMEOUT_MS), Status::NoAnswer);
+        assert_eq!(status(Some(&p), &att, &l, now), Status::Checking);
+        assert_eq!(status(Some(&p), &[], &l, now + PING_TIMEOUT_MS), Status::NoAnswer);
         p.answered_at = Some(now - 2_000);
-        assert_eq!(status(Some(&p), &l, now), Status::Answering { checked_at: now - 5_000, secs: 3 });
+        p.answered_by = "Cowork · Acme".into();
+        assert_eq!(status(Some(&p), &[], &l, now), Status::Answering { checked_at: now - 5_000, secs: 3, by: "Cowork · Acme".into() });
         assert_eq!(p.status(), "answered");
         for m in Mode::ALL {
             assert_eq!(Mode::parse(m.id()), Some(m));
         }
+    }
+
+    #[test]
+    fn attached_listeners_are_kept_while_they_call_and_dropped_after() {
+        let a = attach("wordcraft:1:7", "Cowork · Acme");
+        let b = attach("wordcraft:1:7", "Claude Code · fork");
+        assert_ne!(a.listener, b.listener);
+        assert_eq!(listeners_of("wordcraft:1:7").len(), 2);
+        assert!(touch(&a.listener).is_some());
+        assert!(detach(&b.listener));
+        assert_eq!(listeners_of("wordcraft:1:7").iter().map(|l| l.label.as_str()).collect::<Vec<_>>(), ["Cowork · Acme"]);
+        // Not seen for 90 s: gone.
+        listeners_lock().iter_mut().for_each(|l| l.last_seen = l.last_seen.saturating_sub(LISTENER_TTL_MS));
+        assert!(listeners_of("wordcraft:1:7").is_empty());
+        assert!(touch(&a.listener).is_none());
     }
 
     #[test]

@@ -350,7 +350,7 @@ fn a_connection_check_goes_out_like_a_question_but_is_never_one() {
     agent(&mut s, "agent.answer", json!({"id": id, "text": "here"})).unwrap();
     let p = crate::ping(&s).unwrap();
     assert!(p.answered_at.is_some());
-    let st = crate::presence::status(Some(&p), &Default::default(), crate::now_ms());
+    let st = crate::presence::status(Some(&p), &[], &Default::default(), crate::now_ms());
     assert!(matches!(st, crate::presence::Status::Answering { .. }), "{st:?}");
     let pending = agent(&mut s, "agent.questions", json!({"status": "pending"})).unwrap();
     assert_eq!(pending.as_array().unwrap().len(), 1);
@@ -359,4 +359,57 @@ fn a_connection_check_goes_out_like_a_question_but_is_never_one() {
     assert!(agent(&mut s, "agent.ping", json!({})).is_err());
     // A wait_for_questions poll counts as a listener, and isn't a "tool call".
     assert!(crate::presence::listeners(false).waiting);
+}
+
+#[test]
+fn aitocraft_documents_attach_and_listeners() {
+    let mut s = letter();
+    s.file_name = Some("contract.docx".into());
+    let me = crate::document_id(&s);
+    assert!(me.starts_with(&format!("wordcraft:{}:", std::process::id())));
+    // list_documents: the registry's object.
+    let docs = agent(&mut s, "agent.documents", json!({})).unwrap();
+    assert_eq!(docs[0]["id"], me.as_str());
+    assert_eq!(docs[0]["title"], "contract.docx");
+    assert_eq!(docs[0]["frontmost"], true);
+    // A document that isn't open here is an error, by name.
+    let e = agent(&mut s, "agent.context", json!({"document": "wordcraft:1:999"})).unwrap_err();
+    assert!(e.contains("document wordcraft:1:999 is not open in WordCraft"), "{e}");
+    assert!(agent(&mut s, "agent.read", json!({"document": me})).is_ok());
+    // attach → a listener; questions carry their document; a call with the listener keeps it.
+    let a = agent(&mut s, "agent.attach", json!({"document": me, "label": "Cowork · Acme"})).unwrap();
+    let l = a["listener"].as_str().unwrap().to_string();
+    assert_eq!(a["document"], me.as_str());
+    assert_eq!(a["title"], "contract.docx");
+    assert_eq!(a["app"], "wordcraft");
+    s.run("agent.ask", &json!({"paragraph": 2, "text": "Fixed fee?"})).unwrap();
+    let qs = agent(&mut s, "agent.questions", json!({"status": "pending", "document": me, "listener": l})).unwrap();
+    assert_eq!(qs[0]["document"], me.as_str());
+    assert_eq!(qs[0]["documentTitle"], "contract.docx");
+    assert!(crate::server::for_document(&qs[0], Some(&me)));
+    assert!(!crate::server::for_document(&qs[0], Some("gridcraft:1:1")));
+    assert_eq!(crate::document_json(&s)["listeners"][0]["label"], "Cowork · Acme");
+    // The ping goes to this document's listeners and records who answered.
+    let ping = s.run("agent.ping", &json!({})).unwrap()["id"].as_str().unwrap().to_string();
+    agent(&mut s, "agent.answer", json!({"id": ping, "text": "here", "listener": l})).unwrap();
+    assert_eq!(crate::ping(&s).unwrap().answered_by, "Cowork · Acme");
+    // detach; an unknown listener must attach again.
+    assert_eq!(agent(&mut s, "agent.detach", json!({"listener": l})).unwrap()["detached"], true);
+    let e = agent(&mut s, "agent.questions", json!({"listener": l})).unwrap_err();
+    assert!(e.contains("attach again"), "{e}");
+    assert_eq!(crate::server::query_param("document=wordcraft%3A12%3A3&x=1", "document").as_deref(), Some("wordcraft:12:3"));
+}
+
+#[test]
+fn every_mcp_tool_takes_a_document() {
+    for t in crate::mcp::tools() {
+        let name = t["name"].as_str().unwrap();
+        assert!(t["inputSchema"]["properties"]["document"].is_object(), "{name}");
+        let has_listener = t["inputSchema"]["properties"]["listener"].is_object();
+        assert_eq!(has_listener, ["list_questions", "wait_for_questions", "claim_question", "answer_question", "detach"].contains(&name), "{name}");
+    }
+    let names: Vec<String> = crate::mcp::tools().iter().map(|t| t["name"].as_str().unwrap().to_string()).collect();
+    for n in ["list_documents", "attach", "detach"] {
+        assert!(names.iter().any(|x| x == n), "{n}");
+    }
 }

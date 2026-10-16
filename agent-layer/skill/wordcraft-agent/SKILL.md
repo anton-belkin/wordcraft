@@ -20,6 +20,14 @@ In Claude Desktop or Cowork the tools come from the local `wordcraft` server (th
 mode, `wordcraft --agent-stdio`); if they are missing, ask the user to press **Connect Cowork** on
 WordCraft's Agent tab, quit Claude with Cmd+Q and open it again.
 
+## Through AItoCraft (several documents, one hub)
+
+When the user says "we're working on contract.docx", call `list_documents`, then `attach` with
+that document and a `label` saying where you are ("Cowork · Acme", "Claude Code · contracts").
+Keep the `document` id and the `listener` it returns, and pass both on every call
+(`wait_for_questions {document, listener}` returns only that document's questions). One
+conversation per document: don't answer questions of a document you aren't attached to.
+
 ## Watch for questions
 
 Start a background monitor on the event stream; each line is a new question:
