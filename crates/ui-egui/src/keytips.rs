@@ -89,12 +89,13 @@ pub const SEARCH_LETTER: &str = "Q";
 
 /// The letter badge for a tab (empty when it has none).
 pub fn tab_letter(tab: &str) -> &'static str {
-    TAB_LETTERS.iter().chain(&TABLE_TAB_LETTERS).find(|(t, _)| *t == tab).map(|(_, l)| *l).unwrap_or("")
+    TAB_LETTERS.iter().chain(&TABLE_TAB_LETTERS).find(|(t, _)| *t == tab).map(|(_, l)| *l).or_else(|| crate::ext::tab_letter(tab)).unwrap_or("") // fork:agent — + extension tabs
 }
 
 /// The tabs that carry a badge, in display order.
 pub fn badge_tabs(app: &WordApp) -> Vec<&'static str> {
     let mut v: Vec<&'static str> = TAB_LETTERS.iter().filter(|(_, l)| !l.is_empty()).map(|(t, _)| *t).collect();
+    v.extend(crate::ext::ribbon_tabs().into_iter().filter(|t| !t.keytip.is_empty()).map(|t| t.name)); // fork:agent
     if crate::ribbon::in_table_public(app) {
         v.extend_from_slice(&["Table Design", "Table Layout"]);
     }

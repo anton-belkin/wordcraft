@@ -198,6 +198,7 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
     let user_tabs = app.session.ribbon.tabs().into_owned();
     let mut tabs: Vec<(String, bool)> = vec![("File".to_string(), false)];
     tabs.extend(user_tabs.iter().filter(|e| !e.hidden).map(|e| (e.name.clone(), e.custom)));
+    tabs.extend(crate::ext::ribbon_tabs().into_iter().map(|t| (t.name.to_string(), false))); // fork:agent
     for ct in contextual_tabs(&app.session) {
         if ct == "Outlining" {
             tabs.insert(1.min(tabs.len()), (ct.to_string(), false));
@@ -378,6 +379,7 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
                         "SmartArt Design" => smart_art_design(app, ui),
                         "Outlining" => outlining(app, ui),
                         "Chart Design" => chart_design(app, ui),
+                        _ if crate::ext::is_tab(&app.ui.tab) => crate::ext::ribbon_tab(app, ui), // fork:agent
                         _ => home(app, ui),
                     }
                     if let Some(e) = entry {
