@@ -1262,6 +1262,7 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
                 }
             }
         }
+        crate::ext::paint_pages(app, ui, &painter, &layout, &rects, geo.scale); // fork:agent
         // Selection (a selected object shows its frame instead): whole table cells shade the
         // cells (an empty one too), a column selection each row's piece, text running into or
         // across a table the whole cells of the rows it takes.
@@ -1551,7 +1552,11 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
         Some(p) => menu.at_position(p),
         None => menu.at_pointer_fixed(),
     };
-    menu.show(|ui| context_menu(app, ui));
+    // fork:agent — the closure also shows the extensions' items
+    menu.show(|ui| {
+        context_menu(app, ui);
+        crate::ext::context_menu(app, ui); // fork:agent
+    });
     // Stand down while the context menu owns the pointer so the two never double up; the open
     // state also covers the click that dismisses the menu.
     app.canvas.context_menu_open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp));

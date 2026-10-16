@@ -100,6 +100,7 @@ pub fn registry() -> Registry {
     v.extend(protect::specs());
     v.extend(speech::specs());
     v.extend(controls::specs());
+    crate::ext::extend(&mut v); // fork:agent — extension commands
     Registry::new(v)
 }
 

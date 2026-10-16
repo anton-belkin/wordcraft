@@ -8,6 +8,7 @@
 
 pub mod catalog;
 pub mod cmd;
+pub mod ext; // fork:agent — extension commands, observers and per-session state
 pub mod file_access;
 pub mod io;
 mod io_ext;

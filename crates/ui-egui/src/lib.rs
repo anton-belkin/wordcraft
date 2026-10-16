@@ -50,6 +50,7 @@ pub mod dialogs_smart_art;
 pub mod dialogs_table_style;
 pub mod dialogs_templates;
 pub mod equation_tab;
+pub mod ext; // fork:agent — UI extension points
 /// The built-in file browser, for desktops without a system file dialog (#576).
 #[cfg(not(target_arch = "wasm32"))]
 pub mod file_browser;
@@ -1991,6 +1992,7 @@ impl WordApp {
             ctx.request_repaint();
             return;
         }
+        ext::frame(self, &ctx); // fork:agent
         let t = theme::Tokens::get(&ctx);
         self.escape_free = self.dialog.is_none() && !self.ui.backstage && self.ui.keytips == keytips::Phase::Off && !egui::Popup::is_any_open(&ctx);
         // Keytips are read before layout so the frame paints the new state; badges paint after
@@ -2015,6 +2017,7 @@ impl WordApp {
                 ribbon::show(self, ui);
                 chrome::status_bar(self, ui);
                 panes::show(self, ui);
+                ext::side_panels(self, ui); // fork:agent
             }
             egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.canvas)).show(ui, |ui| {
                 canvas::show(self, ui);

@@ -458,6 +458,7 @@ pub struct Session {
     pub column: Option<ColumnBlock>,
     /// Column selection mode (Ctrl+Shift+F8): caret movement extends the block.
     pub column_mode: bool,
+    pub ext: crate::ext::Slots, // fork:agent — extensions' per-session state (not the document)
     /// A selection widened to whole table cells or rows, and where it really runs (see
     /// [`Session::sel_ends`]).
     pub(crate) widened: Option<Widened>,
@@ -647,6 +648,7 @@ impl Session {
             recovery: None,
             column: None,
             column_mode: false,
+            ext: Default::default(), // fork:agent
             widened: None,
             edit_marks: Vec::new(),
             go_back_step: 0,
@@ -1099,6 +1101,7 @@ impl Session {
             // `sel` matches them.
             column: _,
             column_mode: _,
+            ext: _, // fork:agent — extensions' own state, not an edit
             widened: _,
             // Go Back's places, like the caret history: not part of the document.
             edit_marks: _,
@@ -1171,6 +1174,7 @@ impl Session {
         if let Some(why) = (spec.enabled)(self) {
             return Err(CmdError::Disabled(format!("{id}: {why}")));
         }
+        crate::ext::before(self, id, params); // fork:agent
         // Restrict Editing: refused outright, or allowed as long as it only edits the exceptions.
         let guard = if spec.mutates { crate::cmd::protect::check_before(self, id, params)? } else { false };
         if spec.mutates && self.doc.settings.protection.as_deref() == Some("trackedChanges") {
@@ -1299,6 +1303,7 @@ impl Session {
                 self.status = e.to_string();
             }
         }
+        crate::ext::after(self, id, params, &result); // fork:agent
         result
     }
 
