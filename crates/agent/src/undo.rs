@@ -51,6 +51,11 @@ pub enum Op {
     },
     /// A place the person added to a topic (bookmark only).
     AddPlace,
+    /// The document's context (the Agent tab's Context group), before and after.
+    Context {
+        before: Option<crate::context::Context>,
+        after: Option<crate::context::Context>,
+    },
 }
 
 /// The session's steps.
@@ -144,6 +149,7 @@ fn undo(s: &mut Session, op: &Op) {
             crate::update(s, |l| l.private = b);
         }
         Op::AddPlace => {}
+        Op::Context { before, .. } => set_context(s, before),
     }
 }
 
@@ -176,7 +182,14 @@ fn redo(s: &mut Session, op: &Op) {
             crate::update(s, |l| l.private = a);
         }
         Op::AddPlace => {}
+        Op::Context { after, .. } => set_context(s, after),
     }
+}
+
+fn set_context(s: &mut Session, c: &Option<crate::context::Context>) {
+    let c = c.clone();
+    crate::update(s, |l| l.context = c);
+    crate::context::apply(s);
 }
 
 fn set_status(s: &mut Session, topic: &str, v: &(TopicStatus, Option<crate::layer::Proposal>)) {

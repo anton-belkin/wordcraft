@@ -717,3 +717,57 @@ fn a_question_on_the_clients_copy_goes_on_the_template() {
     assert_eq!(topics_of(&mut s)["topics"].as_array().unwrap().len(), 2);
     assert!(body(&s).contains("Brightwater Shipping Ltd"));
 }
+
+// ---------------------------------------------------------------- the Context group
+
+#[test]
+fn the_context_is_the_documents_undoable_and_saved() {
+    use crate::context::{self, Kind};
+    let mut s = letter();
+    // A new document has none of its own: the app's last used.
+    assert!(crate::layer(&s).context.is_none());
+    let r = s.run("agent.setContext", &json!({"kind": "none", "web": true})).unwrap();
+    assert_eq!((r["kind"].as_str(), r["mode"].as_str(), r["web"].as_bool()), (Some("none"), Some("background"), Some(true)));
+    assert_eq!(context::last().kind, Kind::None, "remembered for the next new document");
+    s.run("agent.setContext", &json!({"kind": "code", "code": "session"})).unwrap();
+    assert_eq!(context::of(&s).mode(), crate::presence::Mode::Channel);
+    // Person actions: ⌘Z takes them back in order, ⌘⇧Z does them again.
+    s.run("edit.undo", &json!({})).unwrap();
+    assert_eq!(context::of(&s).kind, Kind::None);
+    s.run("edit.undo", &json!({})).unwrap();
+    let first = context::of(&s);
+    assert_ne!((first.kind, first.web), (Kind::None, true), "back to what it was before");
+    s.run("edit.redo", &json!({})).unwrap();
+    assert_eq!((context::of(&s).kind, context::of(&s).web), (Kind::None, true));
+    // Never the agent's.
+    assert!(agent(&mut s, "agent.setContext", json!({"kind": "cowork"})).is_err());
+    // Saved in the file's agent layer.
+    let dir = std::env::temp_dir().join(format!("wordcraft-agent-ctx-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("ctx.docx");
+    s.run("file.saveAs", &json!({"path": path.to_string_lossy()})).unwrap();
+    let saved = wordcraft_docx::read(&std::fs::read(&path).unwrap()).unwrap();
+    let l = crate::layer::read_from(&saved);
+    assert_eq!(l.context.map(|c| (c.kind, c.web)), Some((Kind::None, true)));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_project_folder_counts_only_once_chosen_here() {
+    use crate::context::{CodeWay, Context, Kind};
+    let dir = std::env::temp_dir().join(format!("wordcraft-agent-project-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let folder = dir.to_string_lossy().to_string();
+    // Written in a file someone sent: not used.
+    let sent = Context { kind: Kind::Code, code: CodeWay::Folder, folder: folder.clone(), web: false };
+    assert_eq!(sent.project_folder(), None);
+    // Chosen by the person here: used.
+    let mut s = letter();
+    let r = s.run("agent.setContext", &json!({"kind": "code", "code": "folder", "folder": folder})).unwrap();
+    assert_eq!(r["projectFolder"].as_str(), Some(folder.as_str()));
+    assert_eq!(crate::runner::placement(&s).0, dir);
+    // No folder that isn't there; the web only with No context.
+    assert!(s.run("agent.setContext", &json!({"folder": "/no/such/folder/here"})).is_err());
+    assert!(!Context { kind: Kind::Code, web: true, ..Default::default() }.web_on());
+    let _ = std::fs::remove_dir_all(&dir);
+}

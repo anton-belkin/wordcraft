@@ -69,13 +69,16 @@ pub fn start(o: Options, control: Option<u16>) {
                 data_dir: wordcraft_control_key::settings_dir().map(|d| d.join("agent")),
                 ..Default::default()
             });
+            // What the agent knows: each document's context; a new one starts with the last used
+            // (`--agent-mode` sets it).
+            wordcraft_agent::context::reload();
             match o.mode {
-                Some(m) => wordcraft_agent::runner::set_mode(m),
-                None => wordcraft_agent::presence::store_mode(wordcraft_agent::runner::load_mode().unwrap_or_default()),
+                Some(m) => {
+                    wordcraft_agent::runner::set_mode(m);
+                    wordcraft_agent::context::set_last(&wordcraft_agent::context::last().with_mode(m));
+                }
+                None => wordcraft_agent::presence::store_mode(wordcraft_agent::context::last().mode()),
             }
-            let mut c = wordcraft_agent::runner::config();
-            c.document_folder = wordcraft_agent::runner::load_document_folder();
-            wordcraft_agent::runner::set_config(c);
             // AItoCraft: announce this app and its document to the hub.
             wordcraft_agent::registry::start(format!("http://127.0.0.1:{port}/mcp"), None);
             if let Some(e) = stdio_entry(Some(control)) {

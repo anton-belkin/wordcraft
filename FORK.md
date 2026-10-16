@@ -16,7 +16,7 @@ before changing anything outside the agent crates.
 | Path | What | Upstream? |
 | --- | --- | --- |
 | `crates/agent/` (`wordcraft-agent`, L5) | The layer: data model and storage in the `.docx`, quote anchors, the privacy mask, templates and the CRM fixture, `agent.*` commands, the observer (save, history, template preview), the in-app MCP server, and `wordcraft-agent-mcp` (the same over stdio) | fork only |
-| `crates/agent-ui/` (`wordcraft-agent-ui`, L6) | The Agent tab on the ribbon (groups Agent, Client data, Connection), the Agent pane (the passage's questions, answers, notes, history), badges and margin notes on the page, context-menu items; `examples/agent_demo.rs` renders the window offscreen with the real MCP server | fork only |
+| `crates/agent-ui/` (`wordcraft-agent-ui`, L6) | The Agent tab on the ribbon (groups Agent, Client data, Context), the Agent pane (the passage's questions, answers, notes, history), badges and margin notes on the page, context-menu items; `examples/agent_demo.rs` renders the window offscreen with the real MCP server | fork only |
 | `apps/wordcraft/src/agent.rs` | Starts the layer in the desktop app (`--agent-port`, `--no-agent`, `--agent-demo`) | fork only |
 | `agent-layer/` | The agent's skill, the end-to-end demo script, the rebase script | fork only |
 | `crates/engine/src/ext.rs` | **Hook**: extension commands, command observers, per-session extension state | new file in an upstream crate |
@@ -89,16 +89,40 @@ upstream. Each one accepted upstream removes its lines from the patch.
   responses; GridCraft uses 7980) and reaches the document through the app's own loopback control
   channel. `/events` streams new questions, one JSON line each, for an agent's background monitor
   (`curl -sN http://127.0.0.1:7982/events`).
-- **Is anyone listening?** (`presence.rs`) The Connection group's status comes from a check and
-  from passive signals. *Check* (`agent.ping`) puts a system question in the queue, `"kind":
-  "ping"`, text "Is anyone there? (connection check; answer \"here\")": it goes out by every path
+- **Is anyone listening?** (`presence.rs`, internal: the UI never shows the check or its wording)
+  The Ready lamp of the Context group comes from a quiet check and from passive signals. The check
+  (`agent.ping`) puts a system question in the queue, `"kind": "ping"`: it goes out by every path
   (list_questions, wait_for_questions, `/events`, the channel, the background agent), is never
-  shown as a question, has no badge and is never saved; an answer marks "Agent answering · checked
-  12 s ago · answered in N s"; no answer in 60 s is "No answer to check" (and the check then goes
-  to no one). Passive: an `/events` or channel stream connected, a `wait_for_questions` poll in the
-  last minute (its calls carry `waiting`, so HTTP and stdio count alike), the background agent
-  running: "Listener connected · not checked". Else "Nobody is listening". Stream polls carry
+  shown as a question, has no badge and is never saved; an answer within 60 s means a listener is
+  really answering. Passive: a conversation attached to this document (AItoCraft `attach`), an
+  `/events` or channel stream connected, a `wait_for_questions` poll in the last minute (its calls
+  carry `waiting`, so HTTP and stdio count alike), the background agent running. Stream polls carry
   `poll`, so neither counts as the agent's last tool call.
+- **The Context group** (Agent tab; the same in GridCraft and DeckCraft, `context.rs`): what the
+  agent knows. A large button shows the mode with the lamp's dot; its menu has **No context**
+  ("Only this document. Runs in the background." [Document]), **Claude Cowork** ("Your Cowork chat,
+  its project and memory." [Document][Your chat]) and **Claude Code** ("Your Claude Code session or
+  a project folder." [Document][Project folder]). Beside it: No context has a **Web** checkbox (the
+  background client may also use WebSearch and WebFetch); Claude Code has a **My session | Project
+  folder** toggle; each has the **Ready lamp** (green Ready: a listener for this document, or the
+  background client usable; amber Waiting: after a Get ready step until someone comes; grey Not
+  ready) and **Get ready ▾**, whose main click runs the next step not done and whose list ticks the
+  done ones: No context › Log in to Claude (opens a terminal with `claude auth login`; shown only
+  while the CLI isn't logged in, from `claude auth status`); Cowork › Install AItoCraft (`aitocraft
+  --install-desktop`), Ask Cowork to collaborate (copies the phrase); My session › Install AItoCraft
+  (`claude mcp add --scope user aitocraft -- <hub>`, done when `claude mcp get aitocraft`
+  succeeds), Ask my session to collaborate (copies `claude
+  --dangerously-load-development-channels server:aitocraft`); Project folder › Choose folder… (the
+  system's chooser; the path is shown; the background client runs there and sees that folder's
+  CLAUDE.md, memory and files). The lamp checks by itself and sends the quiet check when something
+  is connected but hasn't said it is here for this document. The context is the document's, saved
+  in its agent layer (`context`), and a person's change is an undo step (`agent.setContext`); a new
+  document starts with the last context used in the app (`context.json` in the settings folder). A
+  project folder written in a file is used only once chosen on this machine (`folders` in the
+  settings folder): a document someone sent can't point the agent at a folder. Right-click the
+  mode button for the background session (Open in Claude Desktop, New session, Stop) and Details,
+  which keeps the per-app ways in without AItoCraft (`wordcraft --agent-stdio`, HTTP, the monitor
+  command, the Claude Desktop entry).
 - **Topics** (`~/aitocraft/TOPICS.md`, layer format v2; v1 files migrate on load). A topic is one
   question or theme: places (bookmarks `_GcPlace_<id>` in the document, with a quote anchor to fall
   back on), a status (Open, Revise, Agreed, For information) with text, who and when, notes, and the
@@ -134,37 +158,34 @@ upstream. Each one accepted upstream removes its lines from the patch.
     wait_for_questions, claim_question and answer_question (refreshes it; dropped after 90 s; an
     unknown one is told to attach again); every question carries `document` and `documentTitle`;
     `GET /events?document=<id>`; a ping answer records the listener that answered.
-  - *Connection group*: the status is this document's ("Listening: Cowork · Acme · seen 20 s ago",
-    the check's result, or "Nobody is listening for this document"); modes "Claude Desktop / Cowork
-    (AItoCraft)", "My Claude Code session (AItoCraft channel)", "Background agent", "Off"; Copy ▸
-    "Copy phrase for Claude", "Install AItoCraft in Claude Desktop" (runs `aitocraft
-    --install-desktop` when the binary is found: PATH, `~/.local/bin`, `~/aitocraft/target/release`),
-    "Claude Code: add AItoCraft", and for the channel "Start Claude Code with the channel". The
-    per-app connections (`wordcraft --agent-stdio`, HTTP, the monitor command) stay under Details as
-    the fallback.
-- **The app can bring the agent in itself**, in a mode the app sets (Agent tab ▸ Connection ▸
-  Mode, or `--agent-mode connect|channel|background|off`, remembered in the settings folder; never
-  from the file: a document someone sends must not start an agent that spends the reader's money).
-  - *I connect my agent*: MCP over HTTP or stdio (Claude Code, Cowork, any client). Copy ▸ the
-    Claude Code command, the monitor command, Connect Cowork.
+- **The connection modes under the contexts** (`presence::Mode`; `--agent-mode
+  connect|channel|background|off` sets the app's last context, `agent.agentMode` the document's):
+  Claude Cowork is *connect*, Claude Code › My session is *channel*, No context and Claude Code ›
+  Project folder are *background*. The background client starts only with a question the reader
+  asks.
+  - *Connect*: MCP over HTTP or stdio (Claude Code, Cowork, any client), through AItoCraft.
   - *Send to my Claude Code session* (Claude Code Channels, research preview): the server declares
     `experimental["claude/channel"]` and streams each new question on `GET /mcp` (SSE) as
     `notifications/claude/channel`; `wordcraft --agent-stdio` bridges them to stdout (Claude Code
-    spawns channel servers over stdio). Copy ▸ `claude mcp add wordcraft-channel -- <wordcraft>
-    --agent-stdio`, then `claude --dangerously-load-development-channels
-    server:wordcraft-channel`. Interactive sessions only (`-p` ignores channels).
+    spawns channel servers over stdio). Without AItoCraft (Details): `claude mcp add
+    wordcraft-channel -- <wordcraft> --agent-stdio`, then `claude
+    --dangerously-load-development-channels server:wordcraft-channel`. Interactive sessions only
+    (`-p` ignores channels).
   - *Background agent* (`runner.rs`, demoted: it decides the context itself): one `claude -p
     --input-format stream-json --output-format stream-json --verbose` per document, by default in a
     neutral, empty folder (`ArtCraft/agent-sessions/`, so no project's CLAUDE.md, memory or settings
-    become its context); "Run in the document's folder" is an explicit, remembered option. Named `WordCraft · <file>` (`--name`), with
+    become its context), or the project folder of Claude Code › Project folder; with No context ›
+    Web it may also use `WebSearch` and `WebFetch`. A session is resumed only in the folder it
+    ran in (`agentCwd`); a change of folder or web restarts the client. Named `WordCraft · <file>` (`--name`), with
     `--mcp-config` + `--strict-mcp-config` (only the WordCraft server), `--allowedTools
     "mcp__wordcraft__*"`, the skill as `--append-system-prompt-file`, `--max-turns 40`,
     `--max-budget-usd 3.00`. It starts with the first waiting question and gets each new one once;
     its session id is kept in the layer (`agentSession`), so reopening the document resumes it
     (`--resume`); a failed resume or New session starts fresh from a summary of the history. Stop
     is end of input, SIGINT, then kill. Never `--bare`. `WORDCRAFT_AGENT_COMMAND` picks another
-    CLI. Copy ▸ Open session in Claude Desktop, New session.
-  - *Off*: the agent's calls are refused ("the agent connection is off").
+    CLI.
+  - *Off* (`agent.agentMode`, not in the group): the agent's calls are refused ("the agent
+    connection is off").
 
 ## Running it
 
@@ -191,7 +212,7 @@ connects on first use, so Claude can start before WordCraft). The config entry, 
 "wordcraft": {"command": "<path to the wordcraft executable>", "args": ["--agent-stdio", "--control", "127.0.0.1:7981"]}
 ```
 
-The **Connect Cowork** button (Agent tab ▸ Connection) writes it into
+The **Claude Desktop: add WordCraft** item (Agent tab ▸ Context ▸ right-click ▸ Details) writes it into
 `~/Library/Application Support/Claude/claude_desktop_config.json` (Windows: `%APPDATA%\Claude\…`),
 keeping every other server and setting and copying the old file to `….bak-wordcraft-<time>`. Claude
 Desktop keeps that file in memory and writes it back when it quits, so an entry added while it runs

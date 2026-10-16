@@ -127,6 +127,12 @@ pub(crate) struct AgentUi {
     pub new_topic: bool,
     /// Where the last question asked on a client's copy went in the template.
     pub asked_where: Option<String>,
+    /// A Get ready step ran at (ms; 0: none waiting): the lamp shows Waiting until someone comes.
+    pub waiting_since: u64,
+    /// "Ask … to collaborate" done, per document (`cowork@<doc>`, `session@<doc>`).
+    pub asked: std::collections::HashSet<String>,
+    /// The system's folder chooser, open.
+    pub folder_pick: Option<std::sync::mpsc::Receiver<Option<String>>>,
     /// Overview filter.
     pub filter: Option<String>,
     /// Status text being edited, per topic.

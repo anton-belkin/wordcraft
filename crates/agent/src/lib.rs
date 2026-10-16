@@ -24,6 +24,7 @@ pub mod anchor;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod channel;
 pub mod commands;
+pub mod context;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod cowork;
 pub mod crm;
@@ -78,6 +79,7 @@ pub fn install() {
         wordcraft_engine::ext::register_commands(topic_cmds::specs());
         #[cfg(not(target_arch = "wasm32"))]
         wordcraft_engine::ext::register_commands(runner::specs());
+        wordcraft_engine::ext::register_commands(context::specs());
         wordcraft_engine::ext::register_observer(&KEEPER);
     });
 }
@@ -393,7 +395,7 @@ impl Observer for Keeper {
         if matches!(id, "file.save" | "file.saveAs") {
             let l = layer(s);
             let has_part = layer::read_from(&s.doc) != Layer::default();
-            if !l.is_empty() || has_part {
+            if !l.is_empty() || l.context.is_some() || has_part {
                 layer::write_into(&mut s.doc, &l);
             }
         }

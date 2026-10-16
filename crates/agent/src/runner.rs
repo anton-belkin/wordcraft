@@ -4,8 +4,9 @@
 //!
 //! - It runs in a neutral, empty folder of the app (`ArtCraft/agent-sessions/`, its sessions grouped
 //!   there in Claude Desktop), so no project's CLAUDE.md, memory or settings become its context;
-//!   the document's folder is an explicit option ([`Config::document_folder`]). Its session is
-//!   named `WordCraft · <file>` (`--name`).
+//!   with the Claude Code › Project folder context it runs in that folder instead
+//!   ([`crate::context`]), and with No context › Web it may also use WebSearch and WebFetch. Its
+//!   session is named `WordCraft · <file>` (`--name`).
 //! - It sees only the WordCraft server (`--mcp-config` + `--strict-mcp-config`, the user's own
 //!   servers and plugins stay out of its context) and may use only its tools
 //!   (`--allowedTools "mcp__wordcraft__*"`); the agent skill is its system prompt
@@ -16,8 +17,8 @@
 //! - Stop is end of input, then SIGINT, then kill. Never `--bare` (it needs an API key; a
 //!   subscription login works without one).
 //!
-//! The mode is the app's, never the file's: opening a document someone sent must not start an
-//! agent that spends the reader's money.
+//! The mode follows the document's context ([`crate::context`]). It starts an agent only when the
+//! reader asks a question, and a project folder named in a file is used only once chosen here.
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -57,20 +58,12 @@ pub fn neutral_folder() -> Option<PathBuf> {
     crate::registry::folder().and_then(|d| d.parent().map(|p| p.join("agent-sessions")))
 }
 
-/// Whether the background agent runs in the document's folder (remembered, like the mode).
-pub fn set_document_folder(on: bool) {
-    let mut c = config();
-    c.document_folder = on;
-    if let Some(dir) = &c.data_dir {
-        let _ = std::fs::create_dir_all(dir);
-        let _ = std::fs::write(dir.join("cwd"), if on { "document" } else { "neutral" });
-    }
-    set_config(c);
-}
-
-/// The folder choice remembered from the last run.
-pub fn load_document_folder() -> bool {
-    config().data_dir.and_then(|d| std::fs::read_to_string(d.join("cwd")).ok()).is_some_and(|s| s.trim() == "document")
+/// Where this document's background agent runs, and whether it may use the web (its context).
+pub fn placement(s: &Session) -> (PathBuf, bool) {
+    let c = config();
+    let ctx = crate::context::of(s);
+    let cwd = ctx.project_folder().or_else(neutral_folder).or_else(|| c.data_dir.clone()).unwrap_or_else(std::env::temp_dir);
+    (cwd, ctx.web_on())
 }
 
 // ---------------------------------------------------------------- configuration
@@ -86,9 +79,6 @@ pub struct Config {
     pub max_budget_usd: f64,
     /// Where the MCP config, the skill and the mode are kept.
     pub data_dir: Option<PathBuf>,
-    /// Run in the document's folder (its CLAUDE.md, memory and settings become the agent's
-    /// context) instead of the neutral `ArtCraft/agent-sessions/`.
-    pub document_folder: bool,
 }
 
 impl Default for Config {
@@ -104,7 +94,6 @@ impl Default for Config {
             max_turns: 40,
             max_budget_usd: 3.0,
             data_dir: None,
-            document_folder: false,
         }
     }
 }
@@ -152,6 +141,8 @@ struct Agent {
     shared: Arc<Mutex<Status>>,
     /// Started with `--resume`: a quick failure means the session isn't on this machine.
     resumed: bool,
+    /// The folder and web it was started with (a change of context restarts it).
+    placed: (PathBuf, bool),
 }
 
 /// The session's agent (`Session::ext`).
@@ -190,13 +181,16 @@ pub fn running(s: &Session) -> bool {
 }
 
 /// The arguments the agent CLI is started with.
-pub fn args(c: &Config, session: &str, resume: bool, mcp_config: &str, skill: Option<&str>, name: &str) -> Vec<String> {
+pub fn args(c: &Config, session: &str, resume: bool, mcp_config: &str, skill: Option<&str>, name: &str, web: bool) -> Vec<String> {
     let mut a: Vec<String> =
         ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"].iter().map(|s| s.to_string()).collect();
     a.extend([if resume { "--resume" } else { "--session-id" }.to_string(), session.to_string()]);
     a.extend(["--name".to_string(), name.to_string()]);
     a.extend(["--mcp-config".to_string(), mcp_config.to_string(), "--strict-mcp-config".to_string()]);
     a.extend(["--allowedTools".to_string(), "mcp__wordcraft__*".to_string()]);
+    if web {
+        a.extend(["WebSearch".to_string(), "WebFetch".to_string()]);
+    }
     if let Some(s) = skill {
         a.extend(["--append-system-prompt-file".to_string(), s.to_string()]);
     }
@@ -333,15 +327,18 @@ pub fn start(s: &mut Session) -> Result<Status, String> {
     let (mcp, skill) = write_support_files(&c)?;
     let l = crate::layer(s);
     let fresh = slot(s).is_some_and(|sl| sl.fresh);
-    let (session, resume) = if l.agent_session.is_empty() || fresh { (new_uuid(), false) } else { (l.agent_session.clone(), true) };
-    // A neutral, empty folder by default; the document's folder only when asked for.
-    let doc_folder = || s.path.as_deref().and_then(|p| std::path::absolute(p).ok()).and_then(|p| p.parent().map(std::path::Path::to_path_buf));
-    let cwd =
-        if c.document_folder { doc_folder() } else { None }.or_else(neutral_folder).or_else(|| c.data_dir.clone()).unwrap_or_else(std::env::temp_dir);
+    // A neutral, empty folder, or the project folder of the document's context.
+    let (cwd, web) = placement(s);
+    let cwd_text = cwd.display().to_string();
+    // A session lives in its folder: another folder starts a fresh one (sessions from before the
+    // folder was kept ran in the neutral one).
+    let saved_cwd = if l.agent_cwd.is_empty() { neutral_folder().map(|p| p.display().to_string()).unwrap_or_default() } else { l.agent_cwd.clone() };
+    let (session, resume) =
+        if l.agent_session.is_empty() || fresh || saved_cwd != cwd_text { (new_uuid(), false) } else { (l.agent_session.clone(), true) };
     let _ = std::fs::create_dir_all(&cwd);
     let name = format!("WordCraft · {}", display_name(s));
     let mut child = Command::new(&c.command)
-        .args(args(&c, &session, resume, &mcp, skill.as_deref(), &name))
+        .args(args(&c, &session, resume, &mcp, skill.as_deref(), &name, web))
         .current_dir(&cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -359,7 +356,7 @@ pub fn start(s: &mut Session) -> Result<Status, String> {
         let sh = shared.clone();
         let _ = std::thread::Builder::new().name("agent-stderr".into()).spawn(move || read_stderr(stderr, sh));
     }
-    let mut agent = Agent { child, stdin, shared, resumed: resume };
+    let mut agent = Agent { child, stdin, shared, resumed: resume, placed: (cwd.clone(), web) };
     // A fresh session gets the history.
     if !resume && (fresh || !l.log.is_empty()) && writeln!(agent.stdin, "{}", user_message(&seed(&l))).and_then(|()| agent.stdin.flush()).is_ok() {
         lock(&agent.shared).in_flight += 1;
@@ -370,9 +367,12 @@ pub fn start(s: &mut Session) -> Result<Status, String> {
         sl.ended = None;
         sl.agent = Some(agent);
     }
-    if l.agent_session != session {
+    if l.agent_session != session || l.agent_cwd != cwd_text {
         let dirty = s.dirty;
-        crate::update(s, |l| l.agent_session = session.clone());
+        crate::update(s, |l| {
+            l.agent_session = session.clone();
+            l.agent_cwd = cwd_text.clone();
+        });
         s.dirty = dirty;
     }
     Ok(st)
@@ -458,11 +458,17 @@ pub fn question_text(s: &Session, q: &Json) -> String {
 pub fn tick(s: &mut Session) {
     crate::ensure(s);
     sync_doc(s);
+    crate::context::apply(s);
     if mode() != Mode::Background {
         if running(s) {
             stop(s);
         }
         return;
+    }
+    // The context moved it to another folder, or the web was switched: the next question restarts it.
+    let want = placement(s);
+    if slot(s).and_then(|sl| sl.agent.as_ref()).is_some_and(|a| a.placed != want) {
+        stop(s);
     }
     // A finished process: keep its status; a resume that failed starts fresh next time.
     if let Some(sl) = slot(s)
@@ -554,6 +560,7 @@ pub fn status_json(s: &Session) -> Json {
     let st = status(s).unwrap_or_else(|| Status { session_id: crate::layer(s).agent_session.clone(), ..Default::default() });
     json!({
         "mode": mode().id(),
+        "context": crate::context::of(s).json(),
         "command": config().command,
         "running": st.running,
         "sessionId": st.session_id,
@@ -570,7 +577,17 @@ pub fn status_json(s: &Session) -> Json {
 fn mode_cmd(s: &mut Session, v: &Json) -> CmdResult {
     if let Some(m) = p::str(v, "mode") {
         refuse_agent(v)?;
-        set_mode(Mode::parse(m).ok_or_else(|| CmdError::Params("`mode` is connect, channel, background or off".into()))?);
+        let m = Mode::parse(m).ok_or_else(|| CmdError::Params("`mode` is connect, channel, background or off".into()))?;
+        set_mode(m);
+        // The document's context follows (Off is the app's switch, not a context).
+        if m != Mode::Off {
+            crate::ensure(s);
+            let c = crate::context::of(s).with_mode(m);
+            crate::context::set_last(&c);
+            let dirty = s.dirty;
+            crate::update(s, |l| l.context = Some(c));
+            s.dirty = dirty;
+        }
         if mode() != Mode::Background {
             stop(s);
         }
@@ -601,7 +618,7 @@ mod tests {
     #[test]
     fn the_agent_is_started_with_only_wordcraft_and_never_bare() {
         let c = Config { mcp_url: "http://127.0.0.1:7982/mcp".into(), ..Default::default() };
-        let a = args(&c, "0b6e…", false, "/tmp/mcp.json", Some("/tmp/skill.md"), "WordCraft · letter.docx");
+        let a = args(&c, "0b6e…", false, "/tmp/mcp.json", Some("/tmp/skill.md"), "WordCraft · letter.docx", false);
         let joined = a.join(" ");
         for want in [
             "-p",
@@ -619,7 +636,9 @@ mod tests {
             assert!(joined.contains(want), "{want} in {joined}");
         }
         assert!(!joined.contains("--bare"));
-        assert!(args(&c, "x", true, "m", None, "n").join(" ").contains("--resume x"));
+        assert!(!joined.contains("WebSearch"), "no web unless the context allows it");
+        assert!(args(&c, "x", true, "m", None, "n", false).join(" ").contains("--resume x"));
+        assert!(args(&c, "x", false, "m", None, "n", true).join(" ").contains("--allowedTools mcp__wordcraft__* WebSearch WebFetch"));
         let u = new_uuid();
         assert_eq!(u.len(), 36);
         assert_eq!(u.get(14..15), Some("4"));

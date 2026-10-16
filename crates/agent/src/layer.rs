@@ -331,6 +331,12 @@ pub struct Layer {
     /// The background agent's session for this document (resumed when it is opened again).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub agent_session: String,
+    /// The folder that session runs in (a session is resumed only there).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub agent_cwd: String,
+    /// What the agent knows: the document's context (`None`: the app's last used).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<crate::context::Context>,
     /// Topics (v2): places, status, notes, discussion.
     #[serde(default)]
     pub topics: Vec<Topic>,

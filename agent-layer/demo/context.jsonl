@@ -1,0 +1,35 @@
+{"start": "demo", "width": 1440, "height": 900}
+{"serve": 7994}
+{"cmd": "ui.tab", "params": {"tab": "Agent"}}
+{"cmd": "agent.setContext", "params": {"kind": "none", "web": true}}
+{"steps": 30}
+{"exec": "sleep 3"}
+{"steps": 4}
+{"shot": "SHOTS/x1-no-context.png"}
+{"menu": "context"}
+{"steps": 3}
+{"shot": "SHOTS/x2-context-menu.png"}
+{"menu": "none"}
+{"steps": 2}
+{"cmd": "agent.setContext", "params": {"kind": "cowork"}}
+{"steps": 4}
+{"shot": "SHOTS/x3-cowork-not-ready.png"}
+{"menu": "ready"}
+{"steps": 3}
+{"shot": "SHOTS/x4-cowork-get-ready.png"}
+{"menu": "none"}
+{"cmd": "agent.attach", "params": {"label": "Cowork · Engagement letters"}}
+{"steps": 4}
+{"shot": "SHOTS/x5-cowork-ready.png"}
+{"cmd": "agent.setContext", "params": {"kind": "code", "code": "session"}}
+{"steps": 30}
+{"exec": "sleep 3"}
+{"steps": 4}
+{"shot": "SHOTS/x6-code-session.png"}
+{"cmd": "agent.setContext", "params": {"kind": "code", "code": "folder", "folder": "/Users/antonbelkin/wordcraft-fork"}}
+{"steps": 4}
+{"shot": "SHOTS/x7-code-folder.png"}
+{"cmd": "edit.undo", "params": {}}
+{"cmd": "edit.undo", "params": {}}
+{"steps": 4}
+{"shot": "SHOTS/x8-after-two-undos.png"}

@@ -11,7 +11,7 @@
 //! - `{"method": "ui.inspect", "params": {…}}` a control-channel request;
 //! - `{"exec": "curl -s …"}` runs a shell command while the window keeps running, prints its output;
 //! - `{"pane": "questions"}` / `{"pane": null}` opens or closes the Agent pane;
-//! - `{"menu": "copy"}` / `{"menu": "mode"}` opens a menu of the Agent tab's Connection group;
+//! - `{"menu": "context"}` / `{"menu": "ready"}` opens a menu of the Agent tab's Context group (`none` closes);
 //! - `{"steps": 10}`, `{"shot": "/abs/out.png"}`.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
