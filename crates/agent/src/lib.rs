@@ -28,9 +28,11 @@ pub mod commands;
 pub mod cowork;
 pub mod crm;
 pub mod layer;
+pub mod links;
 pub mod mask;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod mcp;
+pub mod places;
 pub mod presence;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod registry;
@@ -42,6 +44,9 @@ pub mod server;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod stdio;
 pub mod template;
+pub mod topic_cmds;
+pub mod topics;
+pub mod undo;
 
 use std::sync::Arc;
 
@@ -70,6 +75,7 @@ pub fn install() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         wordcraft_engine::ext::register_commands(commands::specs());
+        wordcraft_engine::ext::register_commands(topic_cmds::specs());
         #[cfg(not(target_arch = "wasm32"))]
         wordcraft_engine::ext::register_commands(runner::specs());
         wordcraft_engine::ext::register_observer(&KEEPER);
@@ -166,6 +172,8 @@ pub struct State {
     pub render: Option<Render>,
     /// The connection check out now (never saved).
     pub ping: Option<presence::Ping>,
+    /// The person's steps on the layer (undo).
+    pub undo: undo::Log,
 }
 
 /// The session's connection check.
@@ -181,6 +189,8 @@ pub fn ensure(s: &mut Session) {
         st.doc_id = Some(id);
         st.layer = Arc::new(layer::read_from(&s.doc));
         st.render = None;
+        st.ping = None;
+        st.undo = undo::Log::default();
     }
 }
 
@@ -289,6 +299,15 @@ static KEEPER: Keeper = Keeper;
 thread_local! {
     /// Clients whose previews were swapped out by `before` (nested commands stack up).
     static SWAPPED: std::cell::RefCell<Vec<Option<String>>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// The places before each running command (nested commands stack up).
+    static PLACES_BEFORE: std::cell::RefCell<Vec<Option<topics::Before>>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// The selection a Copy widened over places' bookmarks, to put back after it.
+    static COPY_SEL: std::cell::RefCell<Vec<Option<Selection>>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Commands that put back an earlier state of the document.
+fn is_history(id: &str) -> bool {
+    matches!(id, "edit.undo" | "edit.redo" | "edit.undoTo")
 }
 
 /// Commands that act on the template while a preview is shown.
@@ -310,6 +329,12 @@ impl Observer for Keeper {
         ensure(s);
         let swapped = if on_template(id) && !commands::in_agent_exec() { template_in(s) } else { None };
         SWAPPED.with(|w| w.borrow_mut().push(swapped));
+        let mutates = s.registry.get(id).is_some_and(|c| c.mutates) || is_history(id);
+        let places = (mutates && render_state(s).is_none()).then(|| topics::before(s));
+        PLACES_BEFORE.with(|w| w.borrow_mut().push(places));
+        // Copy and Cut of a whole place take its bookmark along.
+        let widened = if matches!(id, "edit.copy" | "edit.cut") && render_state(s).is_none() { topics::widen_for_clipboard(s) } else { None };
+        COPY_SEL.with(|w| w.borrow_mut().push(widened));
         // Write the layer into the document just before it is saved.
         if matches!(id, "file.save" | "file.saveAs") {
             let l = layer(s);
@@ -322,10 +347,23 @@ impl Observer for Keeper {
 
     fn after(&self, s: &mut Session, id: &str, params: &Json, result: &CmdResult) {
         let swapped = SWAPPED.with(|w| w.borrow_mut().pop()).flatten();
-        let mutated = s.registry.get(id).is_some_and(|c| c.mutates) || matches!(id, "edit.undo" | "edit.redo" | "edit.undoTo");
+        let places = PLACES_BEFORE.with(|w| w.borrow_mut().pop()).flatten();
+        if let Some(sel) = COPY_SEL.with(|w| w.borrow_mut().pop()).flatten()
+            && id == "edit.copy"
+        {
+            s.sel = sel;
+        }
+        let mutated = s.registry.get(id).is_some_and(|c| c.mutates) || is_history(id);
         // A new document: its own layer (and no preview).
         ensure(s);
         if mutated && result.is_ok() && render_state(s).is_none() {
+            if is_history(id) {
+                // The person's steps on the layer follow the document back and forth.
+                undo::sync(s);
+            }
+            if let Some(before) = &places {
+                topics::reconcile(s, is_history(id), before);
+            }
             refresh_anchors(s);
             commands::log_change(s, id, params);
         }

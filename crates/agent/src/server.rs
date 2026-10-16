@@ -214,6 +214,7 @@ pub fn event_line(q: &Value) -> Option<Value> {
         "quote": q.get("quote"),
         "question": q.get("text"),
         "kind": q.get("kind").and_then(Value::as_str).unwrap_or("question"),
+        "topic": q.get("topic"),
         "document": q.get("document"),
         "documentTitle": q.get("documentTitle"),
         "hint": if q.get("kind").and_then(Value::as_str) == Some("ping") {
@@ -276,12 +277,34 @@ fn events(mut w: TcpStream, connect: &Connector, document: Option<String>) {
                 Ok(Value::Array(list)) => {
                     for q in list.into_iter().filter(|q| for_document(q, document.as_deref())) {
                         let Some(line) = event_line(&q) else { continue };
-                        let id = line.get("id").and_then(Value::as_str).unwrap_or("").to_string();
-                        if !seen.insert(id) {
+                        // A question sent again (a redo after an undo) is a new event.
+                        let key = format!(
+                            "{}@{}",
+                            line.get("id").and_then(Value::as_str).unwrap_or(""),
+                            q.get("askedAt").and_then(Value::as_u64).unwrap_or(0)
+                        );
+                        if !seen.insert(key) {
                             continue;
                         }
                         if writeln!(w, "{line}").and_then(|()| w.flush()).is_err() {
                             return;
+                        }
+                    }
+                    // Questions the person took back (undo) while the agent had them.
+                    if let Ok(Value::Array(gone)) = b.call(
+                        "engine.execute",
+                        json!({"command": "agent.questions", "params": {"status": "withdrawn", "actor": "agent", "masked": true, "poll": true}}),
+                    ) {
+                        for q in gone.into_iter().filter(|q| for_document(q, document.as_deref())) {
+                            let id = q.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+                            let key = format!("withdrawn:{id}@{}", q.get("askedAt").and_then(Value::as_u64).unwrap_or(0));
+                            if !seen.insert(key) {
+                                continue;
+                            }
+                            let line = json!({"event": "withdrawn", "id": id, "document": q.get("document"), "hint": "the user took this question back: drop it"});
+                            if writeln!(w, "{line}").and_then(|()| w.flush()).is_err() {
+                                return;
+                            }
                         }
                     }
                 }

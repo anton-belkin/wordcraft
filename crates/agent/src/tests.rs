@@ -121,7 +121,8 @@ fn a_question_goes_from_pending_to_answered() {
     agent(&mut s, "agent.answer", json!({"id": id, "text": "Yes, for fixed fees.", "links": [{"label": "Fee policy", "href": "https://example.org/fees", "summary": "Fixed fees are billed upfront."}]})).unwrap();
     let l = crate::layer(&s);
     assert_eq!(l.questions[0].status, QuestionStatus::Answered);
-    assert_eq!(l.questions[0].answer.as_ref().unwrap().links[0].summary, "Fixed fees are billed upfront.");
+    // The links are inside the text now.
+    assert!(l.questions[0].answer.as_ref().unwrap().text.contains("[Fee policy](https://example.org/fees)"));
     assert!(!l.questions[0].seen);
     s.run("agent.seen", &json!({"id": id})).unwrap();
     assert!(crate::layer(&s).questions[0].seen);
@@ -141,13 +142,14 @@ fn anchors_follow_edits_and_survive_undo() {
     let qs = agent(&mut s, "agent.questions", json!({})).unwrap();
     assert_eq!(qs[0]["paragraph"], 3, "{qs}");
     assert_eq!(qs[0]["quote"], "payable in advance");
-    // Undo everything: the question is still there, and found again.
-    for _ in 0..6 {
-        let _ = s.run("edit.undo", &json!({}));
+    // Undo the edits: the question is still there, and found again.
+    for _ in 0..3 {
+        s.run("edit.undo", &json!({})).unwrap();
     }
     let qs = agent(&mut s, "agent.questions", json!({})).unwrap();
     assert_eq!(qs.as_array().unwrap().len(), 1);
     assert_eq!(qs[0]["paragraph"], 2, "{qs}");
+    assert_eq!(qs[0]["quote"], "payable in advance");
 }
 
 #[test]
@@ -412,4 +414,256 @@ fn every_mcp_tool_takes_a_document() {
     for n in ["list_documents", "attach", "detach"] {
         assert!(names.iter().any(|x| x == n), "{n}");
     }
+}
+
+// ---------------------------------------------------------------- topics (TOPICS.md)
+
+fn topics_of(s: &mut Session) -> Value {
+    agent(s, "agent.topics", json!({})).unwrap()
+}
+
+fn select(s: &mut Session, text: &str) {
+    s.run("select.text", &json!({"text": text})).unwrap();
+}
+
+#[test]
+fn a_question_makes_a_topic_with_its_selection_as_a_bookmarked_place() {
+    let mut s = letter();
+    select(&mut s, "payable in advance");
+    let r = s.run("agent.ask", &json!({"text": "Is that usual?"})).unwrap();
+    assert_eq!(r["newTopic"], true);
+    let t = topics_of(&mut s);
+    assert_eq!(t["topics"][0]["topic"], 1);
+    assert_eq!(t["topics"][0]["status"], "open");
+    assert_eq!(t["topics"][0]["places"][0]["place"], "1");
+    assert_eq!(t["topics"][0]["places"][0]["quote"], "payable in advance");
+    // A bookmark in the document, hidden (its name starts with "_").
+    let m = crate::places::scan(&s.doc);
+    assert_eq!(m.len(), 1);
+    assert!(m.keys().next().unwrap().starts_with("_GcPlace_"));
+    // Asking again on the same text adds to the topic; "New topic" starts another.
+    select(&mut s, "payable in advance");
+    assert_eq!(s.run("agent.ask", &json!({"text": "And for whom?"})).unwrap()["newTopic"], false);
+    select(&mut s, "payable in advance");
+    assert_eq!(s.run("agent.ask", &json!({"text": "Separate", "newTopic": true})).unwrap()["newTopic"], true);
+    assert_eq!(topics_of(&mut s)["topics"].as_array().unwrap().len(), 2);
+    // Questions carry their topic.
+    let qs = agent(&mut s, "agent.questions", json!({"status": "pending"})).unwrap();
+    assert_eq!(qs[1]["topic"]["number"], 1);
+    assert_eq!(qs[1]["topic"]["status"], "open");
+}
+
+#[test]
+fn copy_and_paste_duplicates_a_place_and_cut_moves_it() {
+    let mut s = letter();
+    select(&mut s, "payable in advance");
+    s.run("agent.ask", &json!({"text": "Is that usual?"})).unwrap();
+    // Copy, paste at the end of the document: the topic gains a place.
+    select(&mut s, "payable in advance");
+    s.run("edit.copy", &json!({})).unwrap();
+    s.run("caret.docEnd", &json!({})).unwrap();
+    s.run("edit.paste", &json!({})).unwrap();
+    let t = topics_of(&mut s);
+    let places = t["topics"][0]["places"].as_array().unwrap().clone();
+    assert_eq!(places.len(), 2, "{t}");
+    assert_eq!(places[0]["place"], "1.1");
+    assert_eq!(places[1]["place"], "1.2");
+    assert_eq!(places[1]["paragraph"], 3);
+    assert_eq!(crate::places::scan(&s.doc).len(), 2, "two bookmarks, two names");
+    // Cut and paste moves a place: still one place, now where the text went.
+    let mut s = letter();
+    select(&mut s, "fixed");
+    s.run("agent.ask", &json!({"text": "Why fixed?"})).unwrap();
+    select(&mut s, "fixed");
+    s.run("edit.cut", &json!({})).unwrap();
+    s.run("caret.docEnd", &json!({})).unwrap();
+    s.run("edit.paste", &json!({})).unwrap();
+    let t = topics_of(&mut s);
+    let places = t["topics"][0]["places"].as_array().unwrap().clone();
+    assert_eq!(places.len(), 1, "{t}");
+    assert_eq!(places[0]["paragraph"], 3);
+    assert!(places[0].get("removed").is_none(), "{t}");
+    assert_eq!(crate::places::scan(&s.doc).len(), 1);
+}
+
+#[test]
+fn deleted_text_keeps_its_whereabouts_and_undo_brings_it_back() {
+    let mut s = letter();
+    select(&mut s, "payable in advance");
+    s.run("agent.ask", &json!({"text": "Is that usual?"})).unwrap();
+    select(&mut s, "payable in advance");
+    s.run("text.delete", &json!({})).unwrap();
+    assert!(!body(&s).contains("payable in advance"));
+    let t = topics_of(&mut s);
+    let p = &t["topics"][0]["places"][0];
+    assert_eq!(p["removed"], true, "{t}");
+    assert_eq!(p["quote"], "payable in advance");
+    assert_eq!(p["paragraph"], 2);
+    assert!(crate::places::scan(&s.doc).values().next().unwrap()[0].collapsed());
+    s.run("edit.undo", &json!({})).unwrap();
+    let t = topics_of(&mut s);
+    assert!(t["topics"][0]["places"][0].get("removed").is_none(), "{t}");
+    assert_eq!(t["topics"][0]["places"][0]["quote"], "payable in advance");
+}
+
+#[test]
+fn undo_of_a_question_withdraws_it_and_redo_sends_it_again() {
+    let mut s = letter();
+    select(&mut s, "payable in advance");
+    let id = s.run("agent.ask", &json!({"text": "Is that usual?"})).unwrap()["id"].as_str().unwrap().to_string();
+    assert_eq!(agent(&mut s, "agent.questions", json!({"status": "pending"})).unwrap().as_array().unwrap().len(), 1);
+    // Not taken yet: the question and its place go.
+    s.run("edit.undo", &json!({})).unwrap();
+    assert!(agent(&mut s, "agent.questions", json!({"status": "pending"})).unwrap().as_array().unwrap().is_empty());
+    assert!(topics_of(&mut s)["topics"].as_array().unwrap().is_empty());
+    assert!(crate::places::scan(&s.doc).is_empty());
+    // Redo: back, and sent again.
+    s.run("edit.redo", &json!({})).unwrap();
+    let qs = agent(&mut s, "agent.questions", json!({"status": "pending"})).unwrap();
+    assert_eq!(qs[0]["id"], id.as_str());
+    assert_eq!(crate::layer(&s).questions[0].round, 1);
+    assert_eq!(topics_of(&mut s)["topics"].as_array().unwrap().len(), 1);
+    // Being worked on, then undone: withdrawn, and the agent's answer is refused.
+    agent(&mut s, "agent.claim", json!({"id": id})).unwrap();
+    s.run("edit.undo", &json!({})).unwrap();
+    assert_eq!(agent(&mut s, "agent.questions", json!({"status": "withdrawn"})).unwrap().as_array().unwrap().len(), 1);
+    let e = agent(&mut s, "agent.answer", json!({"id": id, "text": "x"})).unwrap_err();
+    assert!(e.contains("withdrawn by the user; drop it"), "{e}");
+    // Answered, undone, redone: back with its answer, not asked again.
+    s.run("edit.redo", &json!({})).unwrap();
+    agent(&mut s, "agent.claim", json!({"id": id})).unwrap();
+    agent(&mut s, "agent.answer", json!({"id": id, "text": "Yes."})).unwrap();
+    s.run("edit.undo", &json!({})).unwrap();
+    assert!(topics_of(&mut s)["topics"].as_array().unwrap().is_empty());
+    s.run("edit.redo", &json!({})).unwrap();
+    let q = crate::layer(&s).questions[0].clone();
+    assert_eq!(q.status, QuestionStatus::Answered);
+    assert!(agent(&mut s, "agent.questions", json!({"status": "pending"})).unwrap().as_array().unwrap().is_empty());
+}
+
+#[test]
+fn only_a_person_sets_agreed_and_status_changes_undo() {
+    let mut s = letter();
+    select(&mut s, "fixed");
+    s.run("agent.ask", &json!({"text": "Fixed?"})).unwrap();
+    let e = agent(&mut s, "agent.topicStatus", json!({"topic": 1, "status": "agreed", "text": "fine"})).unwrap_err();
+    assert!(e.contains("only a person sets Agreed"), "{e}");
+    agent(&mut s, "agent.topicStatus", json!({"topic": 1, "status": "revise", "text": "the fee must be per year, see §2"})).unwrap();
+    agent(&mut s, "agent.proposeAgreed", json!({"topic": 1, "reasons": "the partner confirmed it"})).unwrap();
+    let t = topics_of(&mut s);
+    assert_eq!(t["topics"][0]["status"], "revise");
+    assert_eq!(t["topics"][0]["proposal"]["status"], "agreed");
+    assert!(t["topics"][0]["statusText"].as_str().unwrap().contains("[§2](para:2)"), "{t}");
+    // The person confirms with one click; ⌘Z takes it back.
+    s.run("agent.confirmAgreed", &json!({"topic": 1})).unwrap();
+    assert_eq!(topics_of(&mut s)["topics"][0]["status"], "agreed");
+    assert_eq!(topics_of(&mut s)["signOff"]["line"], "Agreed 1 of 1 · 0 revise · 0 open");
+    s.run("edit.undo", &json!({})).unwrap();
+    assert_eq!(topics_of(&mut s)["topics"][0]["status"], "revise");
+    s.run("edit.redo", &json!({})).unwrap();
+    assert_eq!(topics_of(&mut s)["topics"][0]["status"], "agreed");
+    // Every change is in the history, with who.
+    let l = crate::layer(&s);
+    assert!(l.log.iter().any(|e| e.kind == "status" && e.actor == crate::Actor::Agent));
+    assert!(l.log.iter().any(|e| e.kind == "status" && e.actor == crate::Actor::Human && e.text.contains("Agreed")));
+}
+
+#[test]
+fn links_in_text_follow_the_document() {
+    let mut s = letter();
+    select(&mut s, "fixed");
+    let id = s.run("agent.ask", &json!({"text": "Fixed?"})).unwrap()["id"].as_str().unwrap().to_string();
+    agent(&mut s, "agent.answer", json!({"id": id, "text": "See §3 and [the end](quote:3/31 December)."})).unwrap();
+    // A paragraph above: §3 is now §4, the quote still leads to its text.
+    s.run("caret.docStart", &json!({})).unwrap();
+    s.run("text.newParagraph", &json!({})).unwrap();
+    let qs = agent(&mut s, "agent.questions", json!({})).unwrap();
+    let a = qs[0]["answer"]["text"].as_str().unwrap();
+    assert!(a.contains("[§4](para:4)") && a.contains("[the end](para:4)"), "{a}");
+}
+
+#[test]
+fn the_agents_places_stay_when_the_person_undoes() {
+    let mut s = letter();
+    select(&mut s, "fixed");
+    s.run("agent.ask", &json!({"text": "Fixed?"})).unwrap();
+    s.run("caret.docEnd", &json!({})).unwrap();
+    s.run("text.insert", &json!({"text": " Signed."})).unwrap();
+    agent(
+        &mut s,
+        "agent.addPlaces",
+        json!({"topic": 1, "places": [{"paragraph": 3, "quote": "31 December", "reason": "the term ends with the fee period"}]}),
+    )
+    .unwrap();
+    assert_eq!(topics_of(&mut s)["topics"][0]["places"].as_array().unwrap().len(), 2);
+    // The person undoes their typing (before the agent's place existed): the place stays.
+    s.run("edit.undo", &json!({})).unwrap();
+    let t = topics_of(&mut s);
+    let ps = t["topics"][0]["places"].as_array().unwrap();
+    assert_eq!(ps.len(), 2, "{t}");
+    assert_eq!(ps[1]["reason"], "the term ends with the fee period");
+    assert_eq!(ps[1]["quote"], "31 December");
+    // widen_place: the whole paragraph.
+    agent(&mut s, "agent.widenPlace", json!({"place": "1.2", "to": {"paragraph": 3}, "reason": "the whole clause"})).unwrap();
+    assert_eq!(topics_of(&mut s)["topics"][0]["places"][1]["quote"], "The engagement ends on 31 December.");
+    // The person rejects it (undoable).
+    s.run("agent.rejectPlace", &json!({"place": "1.2"})).unwrap();
+    assert_eq!(topics_of(&mut s)["topics"][0]["places"].as_array().unwrap().len(), 1);
+    s.run("edit.undo", &json!({})).unwrap();
+    assert_eq!(topics_of(&mut s)["topics"][0]["places"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn sending_drops_the_discussion_unless_included() {
+    let mut s = letter();
+    select(&mut s, "fixed");
+    let id = s.run("agent.ask", &json!({"text": "Fixed?"})).unwrap()["id"].as_str().unwrap().to_string();
+    agent(&mut s, "agent.answer", json!({"id": id, "text": "Yes."})).unwrap();
+    agent(&mut s, "agent.note", json!({"topic": 1, "title": "Fee policy", "kind": "decision", "text": "Fixed fee, agreed."})).unwrap();
+    s.run("agent.setStatus", &json!({"topic": 1, "status": "agreed", "text": "with the partner"})).unwrap();
+    let dir = std::env::temp_dir().join(format!("wordcraft-send-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (name, include) in [("plain.docx", false), ("with.docx", true)] {
+        let path = dir.join(name);
+        s.run("agent.saveForSending", &json!({"path": path.to_string_lossy(), "includeDiscussion": include})).unwrap();
+        let doc = wordcraft_docx::read(&std::fs::read(&path).unwrap()).unwrap();
+        let l = crate::layer::read_from(&doc);
+        assert_eq!(l.topics.len(), 1);
+        assert_eq!(l.topics[0].status.kind, crate::layer::StatusKind::Agreed);
+        assert_eq!(l.notes.len(), 1);
+        assert_eq!(l.questions.len(), if include { 1 } else { 0 }, "{name}");
+        assert_eq!(l.log.iter().any(|e| e.text.contains("Fixed?")), include, "{name}");
+        // The places' bookmarks travel with the file.
+        assert_eq!(crate::places::scan(&doc).len(), 1);
+    }
+    // The document itself is unchanged (still its own path, its discussion).
+    assert_eq!(crate::layer(&s).questions.len(), 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn version_1_files_become_topics() {
+    crate::install();
+    let mut doc = Document::from_text("Intro\nOur fee is fixed and payable in advance.\nEnd");
+    let v1 = json!({
+        "version": 0, "next_id": 3,
+        "anchors": [{"id": "a1", "path": [1], "start": 11, "end": 16, "quote": "fixed"}, {"id": "a2", "path": [2], "start": 0, "end": 3, "quote": "End"}],
+        "questions": [{"id": "q1", "anchor": "a1", "text": "Why fixed?", "status": "answered", "seen": true, "answer": {"text": "Policy."}}],
+        "notes": [{"id": "n2", "anchor": "a2", "kind": "source", "text": "See the policy."}]
+    });
+    let xml = format!("<?xml version=\"1.0\"?><agentLayer xmlns=\"{}\"><![CDATA[{}]]></agentLayer>", crate::layer::NS, v1);
+    doc.passthrough.insert("customXml/item9.xml".into(), std::sync::Arc::new(xml.into_bytes()));
+    let mut s = Session::new(doc);
+    let l = crate::layer(&s);
+    assert_eq!(l.version, crate::layer::VERSION);
+    assert_eq!(l.topics.len(), 2);
+    assert_eq!(l.questions[0].topic, l.topics[0].id);
+    assert_eq!(l.topics[0].status.kind, crate::layer::StatusKind::Info, "answered and read");
+    assert_eq!(l.notes[0].topic, l.topics[1].id);
+    // The first edit gives the migrated places their bookmarks.
+    s.run("caret.docEnd", &json!({})).unwrap();
+    s.run("text.insert", &json!({"text": "."})).unwrap();
+    assert_eq!(crate::places::scan(&s.doc).len(), 2);
+    let t = agent(&mut s, "agent.topics", json!({})).unwrap();
+    assert_eq!(t["topics"][0]["places"][0]["quote"], "fixed");
 }

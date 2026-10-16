@@ -18,7 +18,10 @@ with add_note, and log decisions (log_decision). Change the document only with r
 you get (get_context.clientData lists them); refer to it by its placeholder and never try to find the real value. You cannot write \
 into client data. When the document is a template (get_context.template), edit it with placeholders from that vocabulary: the user \
 renders it for a client themselves; you never see a client's values. A question with kind ping is a connection check: answer it at \
-once with \"here\", don't investigate.";
+once with \"here\", don't investigate. TOPICS: every question belongs to a topic (numbered like footnotes, places 3.1, 3.2) with \
+a status (open, revise, agreed, info), notes and a discussion. Link inside the text ([§12](para:12), [3.2](place:3.2), [topic 3](topic:3)); \
+add places that a change here affects (add_places, with a reason); leave notes that will still matter after the chat (add_note with \
+topic); never mark Agreed: propose it (propose_agreed). A question with status withdrawn was taken back by the user: drop it.";
 
 /// Tools that take a `listener` (AItoCraft: a call carrying it keeps the conversation attached).
 const LISTENER_TOOLS: &[&str] = &["list_questions", "wait_for_questions", "claim_question", "answer_question"];
@@ -75,7 +78,7 @@ pub fn tools() -> Vec<Value> {
         tool(
             "list_questions",
             "Questions the user asked on passages. status: pending (new), working (claimed), answered, open (pending+working) or all.",
-            json!({"status": {"type": "string", "enum": ["pending", "working", "answered", "open", "all"]}}),
+            json!({"status": {"type": "string", "enum": ["pending", "working", "answered", "open", "withdrawn", "all"]}}),
             &[],
             true,
         ),
@@ -102,9 +105,51 @@ pub fn tools() -> Vec<Value> {
         ),
         tool(
             "add_note",
-            "Leave a note on a passage, shown in the margin: why it is written this way (explanation), a prepared answer to a likely question (faq, title = the question), an assumption, or a source (link + summary).",
-            json!({"paragraph": para(), "quote": quote(), "text": s("Note text"), "title": s("Short title (for faq: the question)"), "kind": {"type": "string", "enum": ["explanation", "faq", "assumption", "source"]}, "links": links()}),
-            &["paragraph", "text"],
+            "Leave a note on a topic, one that will still matter after the chat: an explanation, a source (url + summary), an assumption or a decision. Without `topic`, on a passage (`paragraph`, `quote`): a topic of its own, For information. Write links inside the text: [§12](para:12), [the fee clause](quote:12/twelve months), [3.2](place:3.2), [topic 3](topic:3), [NOAA](https://…).",
+            json!({"topic": s("Topic id or number"), "paragraph": para(), "quote": quote(), "title": s("Short title"), "text": s("Note text, links inside"), "kind": {"type": "string", "enum": ["explanation", "source", "assumption", "decision", "faq"]}, "url": s("For a source: its URL"), "summary": s("For a source: one line on what it says")}),
+            &["text"],
+            false,
+        ),
+        tool(
+            "list_topics",
+            "The document's topics in order (numbers like footnotes: 3, places 3.1, 3.2): places (paragraph + quote, removed ones flagged), status and its text, note titles, unread answers, the sign-off line.",
+            json!({"status": {"type": "string", "enum": ["open", "revise", "agreed", "info"]}}),
+            &[],
+            true,
+        ),
+        tool(
+            "get_topic",
+            "Everything about a topic: places, status, notes with their text, the discussion so far, the agent's proposal.",
+            json!({"topic": s("Topic id or number")}),
+            &["topic"],
+            true,
+        ),
+        tool(
+            "add_places",
+            "Attach places to a topic when a change here implies changes there, each with a short reason (\"depends on 3.1 via the fee clause\"); the person sees them on the document.",
+            json!({"topic": s("Topic id or number"), "places": {"type": "array", "items": {"type": "object", "properties": {"paragraph": para(), "quote": quote(), "through": n("Last paragraph, for a place over several"), "reason": s("Why it belongs here")}, "required": ["paragraph", "reason"]}}}),
+            &["topic", "places"],
+            false,
+        ),
+        tool(
+            "widen_place",
+            "Widen a place to what the answer is really about (the whole clause, several paragraphs), and say why.",
+            json!({"place": s("Place label, e.g. \"3.1\""), "to": {"type": "object", "properties": {"paragraph": para(), "quote": quote(), "through": n("Last paragraph")}, "required": ["paragraph"]}, "reason": s("Why")}),
+            &["place", "to", "reason"],
+            false,
+        ),
+        tool(
+            "set_status",
+            "Set a topic's status: open (a question, no decision), revise (something here must change), info (nothing to decide), with a short text (links inside). Agreed is the person's: use propose_agreed.",
+            json!({"topic": s("Topic id or number"), "status": {"type": "string", "enum": ["open", "revise", "info"]}, "text": s("The status in a sentence")}),
+            &["topic", "status"],
+            false,
+        ),
+        tool(
+            "propose_agreed",
+            "Suggest that a topic is settled; the person confirms it with one click.",
+            json!({"topic": s("Topic id or number"), "reasons": s("Why it can be agreed (links inside)")}),
+            &["topic", "reasons"],
             false,
         ),
         tool(
@@ -193,7 +238,18 @@ pub fn call(b: &mut dyn Backend, name: &str, args: &Value) -> Result<Value, Stri
         }
         "claim_question" => exec_with(b, "agent.claim", pick(args, &["id"]), args),
         "answer_question" => exec_with(b, "agent.answer", pick(args, &["id", "text", "links"]), args),
-        "add_note" => exec_with(b, "agent.note", pick(args, &["paragraph", "quote", "occurrence", "text", "title", "kind", "links"]), args),
+        "add_note" => exec_with(
+            b,
+            "agent.note",
+            pick(args, &["topic", "paragraph", "quote", "occurrence", "text", "title", "kind", "links", "url", "summary"]),
+            args,
+        ),
+        "list_topics" => exec_with(b, "agent.topics", pick(args, &["status"]), args),
+        "get_topic" => exec_with(b, "agent.topic", pick(args, &["topic"]), args),
+        "add_places" => exec_with(b, "agent.addPlaces", pick(args, &["topic", "places"]), args),
+        "widen_place" => exec_with(b, "agent.widenPlace", pick(args, &["place", "to", "reason"]), args),
+        "set_status" => exec_with(b, "agent.topicStatus", pick(args, &["topic", "status", "text"]), args),
+        "propose_agreed" => exec_with(b, "agent.proposeAgreed", pick(args, &["topic", "reasons"]), args),
         "log_decision" => exec_with(b, "agent.decision", pick(args, &["text", "paragraph", "quote", "source"]), args),
         "get_layer" => exec_with(b, "agent.layer", json!({}), args),
         "run_command" => exec_with(b, "agent.exec", pick(args, &["command", "params", "at", "reason", "source"]), args),

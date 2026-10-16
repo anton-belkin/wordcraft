@@ -95,6 +95,22 @@ pub struct Question {
     /// The reader has opened the answer.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub seen: bool,
+    /// The topic it belongs to (v2).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub topic: String,
+    /// The person took it back while the agent was on it (undo): the agent drops it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub withdrawn: bool,
+    /// Undone: not shown, not sent.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
+    /// How many times it was sent (a redo sends it again).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub round: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 /// An explanation the agent left on a range: why it is written this way, a prepared answer to a
@@ -115,11 +131,153 @@ pub struct Note {
     pub author: Actor,
     #[serde(default)]
     pub at: u64,
+    /// The topic it belongs to (v2).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub topic: String,
+    /// Kept in view (the person pinned it).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
 }
 
 fn explanation() -> String {
     "explanation".into()
 }
+
+// ---------------------------------------------------------------- topics (v2)
+
+/// A topic's status.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StatusKind {
+    /// A question or doubt, no decision yet.
+    #[default]
+    Open,
+    /// Decided that something here must change.
+    Revise,
+    /// Settled and accepted (only a person sets it).
+    Agreed,
+    /// Nothing to decide: an explanation, a source, a caveat.
+    Info,
+}
+
+impl StatusKind {
+    pub const ALL: [StatusKind; 4] = [StatusKind::Open, StatusKind::Revise, StatusKind::Agreed, StatusKind::Info];
+    pub fn parse(s: &str) -> Option<StatusKind> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "open" => Some(StatusKind::Open),
+            "revise" => Some(StatusKind::Revise),
+            "agreed" => Some(StatusKind::Agreed),
+            "info" | "for information" | "information" => Some(StatusKind::Info),
+            _ => None,
+        }
+    }
+    pub fn id(self) -> &'static str {
+        match self {
+            StatusKind::Open => "open",
+            StatusKind::Revise => "revise",
+            StatusKind::Agreed => "agreed",
+            StatusKind::Info => "info",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            StatusKind::Open => "Open",
+            StatusKind::Revise => "Revise",
+            StatusKind::Agreed => "Agreed",
+            StatusKind::Info => "For information",
+        }
+    }
+}
+
+/// A topic's status with its free text, who set it and when.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TopicStatus {
+    #[serde(default)]
+    pub kind: StatusKind,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub text: String,
+    #[serde(default)]
+    pub by: Actor,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub who: String,
+    #[serde(default)]
+    pub at: u64,
+    /// Set by someone (not just the default Open of a first question).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub set: bool,
+}
+
+/// The agent's proposal to mark a topic Agreed, which the person confirms.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Proposal {
+    pub reasons: String,
+    #[serde(default)]
+    pub at: u64,
+}
+
+/// Where a topic applies: a bookmark `_GcPlace_<id>` in the document, with its last known
+/// position and text (`anchor`) to fall back on.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Place {
+    pub id: String,
+    /// Its anchor (last known paragraph, offsets and text).
+    pub anchor: String,
+    /// Why the agent added it ("depends on 3.1 via the fee clause").
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reason: String,
+    #[serde(default)]
+    pub added_by: Actor,
+    /// Its text was deleted: it stays where it was, with the deleted text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub removed: Option<String>,
+    /// The person rejected it (an agent's place).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub rejected: bool,
+    /// Its bookmark is gone with an undo: not shown.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
+    /// Put back from its last known position when an undo loses its bookmark (the agent's places
+    /// and migrated ones; the person's own go and come with their edits).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub restore: bool,
+}
+
+/// One question or theme about the document.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Topic {
+    pub id: String,
+    #[serde(default)]
+    pub places: Vec<Place>,
+    #[serde(default)]
+    pub status: TopicStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposal: Option<Proposal>,
+    #[serde(default)]
+    pub created_by: Actor,
+    #[serde(default)]
+    pub created_at: u64,
+}
+
+impl Topic {
+    pub fn live_places(&self) -> impl Iterator<Item = &Place> {
+        self.places.iter().filter(|p| !p.rejected && !p.hidden)
+    }
+    /// Shown: it has a place that isn't hidden or rejected (or no places at all).
+    pub fn visible(&self) -> bool {
+        self.places.is_empty() || self.live_places().next().is_some()
+    }
+}
+
+/// The bookmark name of a place.
+pub fn bookmark_name(place: &str) -> String {
+    format!("{BOOKMARK_PREFIX}{place}")
+}
+
+/// Bookmarks of places start with this (Word hides bookmarks that start with "_").
+pub const BOOKMARK_PREFIX: &str = "_GcPlace_";
+
+/// The layer format.
+pub const VERSION: u32 = 2;
 
 /// A range of client data: the agent sees `{{label}}` there instead of the text.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -173,6 +331,9 @@ pub struct Layer {
     /// The background agent's session for this document (resumed when it is opened again).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub agent_session: String,
+    /// Topics (v2): places, status, notes, discussion.
+    #[serde(default)]
+    pub topics: Vec<Topic>,
     /// Bumped on every change (not saved; lets views cache).
     #[serde(skip)]
     pub revision: u64,
@@ -212,7 +373,72 @@ impl Layer {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.anchors.is_empty() && self.log.is_empty()
+        self.anchors.is_empty() && self.log.is_empty() && self.topics.is_empty()
+    }
+
+    pub fn topic(&self, id: &str) -> Option<&Topic> {
+        self.topics.iter().find(|t| t.id == id)
+    }
+
+    pub fn topic_mut(&mut self, id: &str) -> Option<&mut Topic> {
+        self.topics.iter_mut().find(|t| t.id == id)
+    }
+
+    /// The topic and place of a place id.
+    pub fn place(&self, id: &str) -> Option<(&Topic, &Place)> {
+        self.topics.iter().find_map(|t| t.places.iter().find(|p| p.id == id).map(|p| (t, p)))
+    }
+
+    /// Version 1 (questions and notes on anchors) to version 2 (topics): one topic per question,
+    /// its anchor as the place, status Open (For information when answered and read); each note a
+    /// topic of its own, For information.
+    pub fn migrate(&mut self) {
+        if self.version >= VERSION {
+            return;
+        }
+        let questions = self.questions.clone();
+        for (i, q) in questions.iter().enumerate() {
+            if !q.topic.is_empty() {
+                continue;
+            }
+            let t = self.fresh_id("t");
+            let p = self.fresh_id("p");
+            let done = q.status == QuestionStatus::Answered && q.seen;
+            self.topics.push(Topic {
+                id: t.clone(),
+                places: vec![Place { id: p, anchor: q.anchor.clone(), restore: true, ..Default::default() }],
+                status: TopicStatus { kind: if done { StatusKind::Info } else { StatusKind::Open }, at: q.asked_at, ..Default::default() },
+                created_at: q.asked_at,
+                ..Default::default()
+            });
+            if let Some(x) = self.questions.get_mut(i) {
+                x.topic = t;
+            }
+        }
+        let notes = self.notes.clone();
+        for (i, n) in notes.iter().enumerate() {
+            if !n.topic.is_empty() {
+                continue;
+            }
+            let t = self.fresh_id("t");
+            let p = self.fresh_id("p");
+            self.topics.push(Topic {
+                id: t.clone(),
+                places: if n.anchor.is_empty() {
+                    vec![]
+                } else {
+                    vec![Place { id: p, anchor: n.anchor.clone(), added_by: n.author, restore: true, ..Default::default() }]
+                },
+                status: TopicStatus { kind: StatusKind::Info, by: n.author, at: n.at, ..Default::default() },
+                created_by: n.author,
+                created_at: n.at,
+                ..Default::default()
+            });
+            if let Some(x) = self.notes.get_mut(i) {
+                x.topic = t;
+            }
+        }
+        self.version = VERSION;
     }
 
     pub fn is_private_anchor(&self, id: &str) -> bool {
@@ -233,8 +459,9 @@ pub fn read_from(doc: &Document) -> Layer {
             continue;
         }
         if let Some(json) = between(text, "<![CDATA[", "]]>")
-            && let Ok(layer) = serde_json::from_str::<Layer>(json)
+            && let Ok(mut layer) = serde_json::from_str::<Layer>(json)
         {
+            layer.migrate();
             return layer;
         }
     }
@@ -265,7 +492,9 @@ pub fn write_into(doc: &mut Document, layer: &Layer) {
     let parts: Vec<String> = text_lines(doc, EMBEDDED_PARTS).into_iter().filter(|l| l.split('\t').nth(1).is_none_or(|p| !is_ours(p))).collect();
     let (mut roots, mut parts) = (roots, parts);
     if !layer.is_empty() {
-        let json = serde_json::to_string(layer).unwrap_or_default();
+        let mut l = layer.clone();
+        l.version = VERSION;
+        let json = serde_json::to_string(&l).unwrap_or_default();
         // CDATA can't hold `]]>`; JSON only has it inside strings, where an escaped `]` means the same.
         let json = json.replace("]]>", "\\u005d\\u005d>");
         let xml = format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<agentLayer xmlns=\"{NS}\"><![CDATA[{json}]]></agentLayer>");

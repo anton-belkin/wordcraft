@@ -23,14 +23,10 @@ pub fn specs() -> Vec<CommandSpec> {
     let c = CommandSpec::new;
     vec![
         // the reader's side
-        c("agent.ask", "Ask the Agent", LOC, ask)
-            .params(r#"{"text": string, "paragraph"?: number, "quote"?: string} — on the selection unless a paragraph/quote is given"#)
-            .pure(),
         c("agent.seen", "Mark Answer Read", LOC, seen).params(r#"{"id": string}"#).pure(),
         c("agent.private", "Mark as Client Data", LOC, private)
-            .params(r#"{"paragraph"?: number, "quote"?: string, "label"?: string (placeholder name, e.g. "client.name"), "on"?: bool (default true)} — the agent sees {{label}} there"#)
-            .pure(),
-        c("agent.removeNote", "Remove Agent Note", LOC, remove_note).params(r#"{"id": string}"#).pure(),
+            .params(r#"{"paragraph"?: number, "quote"?: string, "label"?: string (placeholder name, e.g. "client.name"), "on"?: bool (default true)} — the agent sees {{label}} there"#),
+        c("agent.removeNote", "Remove Note", LOC, remove_note).params(r#"{"id": string}"#),
         c("agent.render", "Show Template For Client", LOC, render)
             .params(r#"{"client": string (CRM id) | null (the template)} — renders the template with the client's data, read only"#)
             .pure(),
@@ -63,25 +59,25 @@ pub fn specs() -> Vec<CommandSpec> {
 
 // ---------------------------------------------------------------- params
 
-fn bad(msg: impl Into<String>) -> CmdError {
+pub(crate) fn bad(msg: impl Into<String>) -> CmdError {
     CmdError::Params(msg.into())
 }
 
-fn text_p(v: &Json, k: &str, max: usize) -> Result<String, CmdError> {
+pub(crate) fn text_p(v: &Json, k: &str, max: usize) -> Result<String, CmdError> {
     let t = p::str(v, k).map(str::trim).filter(|t| !t.is_empty()).ok_or_else(|| bad(format!("`{k}` (string) is required")))?;
     Ok(t.chars().take(max).collect())
 }
 
-fn opt_text(v: &Json, k: &str, max: usize) -> String {
+pub(crate) fn opt_text(v: &Json, k: &str, max: usize) -> String {
     p::str(v, k).unwrap_or("").trim().chars().take(max).collect()
 }
 
 /// Is the caller the agent (the MCP surface says so, or `agent.exec` is running)?
-fn is_agent(v: &Json) -> bool {
+pub(crate) fn is_agent(v: &Json) -> bool {
     p::str(v, "actor") == Some("agent") || in_agent_exec()
 }
 
-fn links_p(v: &Json) -> Vec<Link> {
+pub(crate) fn links_p(v: &Json) -> Vec<Link> {
     v.get("links")
         .and_then(Json::as_array)
         .map(|a| {
@@ -203,40 +199,6 @@ fn where_of(s: &Session, view: &View, anchor_id: &str) -> Json {
 
 // ---------------------------------------------------------------- reader's side
 
-fn ask(s: &mut Session, v: &Json) -> CmdResult {
-    let text = text_p(v, "text", 20_000)?;
-    let span = as_agent(v, || place(s, v))?;
-    let a = as_agent(v, || add_anchor(s, &span, "a"))?;
-    let agent = is_agent(v);
-    let asked_by = if agent { "agent".to_string() } else { s.author.clone() };
-    let id = crate::update(s, |l| {
-        let id = l.fresh_id("q");
-        l.log(LogEntry {
-            at: crate::now_ms(),
-            actor: if agent { Actor::Agent } else { Actor::Human },
-            kind: "question".into(),
-            text: format!("Asked “{text}” · ¶{}", span.para),
-            command: "agent.ask".into(),
-            anchor: Some(a.clone()),
-            source: id.clone(),
-            who: asked_by.clone(),
-            ..Default::default()
-        });
-        l.questions.push(Question {
-            id: id.clone(),
-            anchor: a,
-            text,
-            status: QuestionStatus::Pending,
-            asked_at: crate::now_ms(),
-            asked_by,
-            answer: None,
-            seen: false,
-        });
-        id
-    });
-    Ok(json!({"id": id, "paragraph": span.para}))
-}
-
 fn seen(s: &mut Session, v: &Json) -> CmdResult {
     let id = text_p(v, "id", 100)?;
     let ok = crate::update(s, |l| l.questions.iter_mut().find(|q| q.id == id).map(|q| q.seen = true).is_some());
@@ -249,6 +211,19 @@ fn private(s: &mut Session, v: &Json) -> CmdResult {
     if agent && !on {
         return Err(bad("only a person can lift the client-data mark"));
     }
+    if agent {
+        return Err(bad("marking client data is the reader's"));
+    }
+    let before = crate::layer(s).private.clone();
+    let r = private_inner(s, v, on);
+    if r.is_ok() {
+        let after = crate::layer(s).private.clone();
+        crate::undo::push(s, crate::undo::Op::Private { before, after });
+    }
+    r
+}
+
+fn private_inner(s: &mut Session, v: &Json, on: bool) -> CmdResult {
     if crate::render_state(s).is_some() {
         return Err(bad("show the template (not a client's rendering) to mark client data"));
     }
@@ -301,13 +276,15 @@ fn clean_label(s: &str) -> String {
 }
 
 fn remove_note(s: &mut Session, v: &Json) -> CmdResult {
+    if is_agent(v) {
+        return Err(bad("removing a note is the reader's"));
+    }
     let id = text_p(v, "id", 100)?;
-    let ok = crate::update(s, |l| {
-        let n = l.notes.len();
-        l.notes.retain(|x| x.id != id);
-        n != l.notes.len()
-    });
-    if ok { Ok(json!({"id": id})) } else { Err(bad(format!("no note `{id}`"))) }
+    let found = crate::layer(s).notes.iter().position(|x| x.id == id).and_then(|i| crate::layer(s).notes.get(i).cloned().map(|n| (i, n)));
+    let Some((index, note)) = found else { return Err(bad(format!("no note `{id}`"))) };
+    crate::update(s, |l| l.notes.retain(|x| x.id != id));
+    crate::undo::push(s, crate::undo::Op::DeleteNote { note, index });
+    Ok(json!({"id": id}))
 }
 
 fn render(s: &mut Session, v: &Json) -> CmdResult {
@@ -339,7 +316,7 @@ fn open_demo(s: &mut Session, v: &Json) -> CmdResult {
 // ---------------------------------------------------------------- agent's side
 
 /// Agent-facing results: scrubbed of client data (unless a person asks for them unmasked).
-fn masked(view: &View, v: &Json, mut out: Json) -> CmdResult {
+pub(crate) fn masked(view: &View, v: &Json, mut out: Json) -> CmdResult {
     if is_agent(v) || p::bool(v, "masked") != Some(false) {
         view.scrub_json(&mut out);
     }
@@ -410,14 +387,35 @@ fn question_json(s: &Session, view: &View, q: &Question) -> Json {
     let mut o = serde_json::to_value(q).unwrap_or(Json::Null);
     if let Some(m) = o.as_object_mut() {
         m.remove("anchor");
+        m.remove("hidden");
+        m.remove("round");
         if let Json::Object(w) = where_of(s, view, &q.anchor) {
             m.extend(w);
+        }
+        // The topic, so a follow-up is answered in context.
+        let l = crate::layer(s);
+        if let Some(t) = l.topic(&q.topic) {
+            m.insert(
+                "topic".into(),
+                json!({"id": t.id, "number": crate::topics::number(s, &t.id), "status": t.status.kind.id(), "statusText": crate::links::for_agent(s, &t.status.text)}),
+            );
+        }
+        if let Some(a) = m.get_mut("answer").and_then(Json::as_object_mut)
+            && let Some(Json::String(t)) = a.get("text").cloned()
+        {
+            a.insert("text".into(), json!(crate::links::for_agent(s, &t)));
         }
     }
     o
 }
 
 fn status_matches(q: &Question, want: &str) -> bool {
+    if want == "withdrawn" {
+        return q.withdrawn;
+    }
+    if q.hidden {
+        return false;
+    }
     match want {
         "pending" => q.status == QuestionStatus::Pending,
         "working" => q.status == QuestionStatus::Working,
@@ -429,7 +427,7 @@ fn status_matches(q: &Question, want: &str) -> bool {
 
 /// The agent's calls are refused while the connection is off; a call naming another document is
 /// refused too (a WordCraft window holds one document).
-fn gate(v: &Json) -> Result<(), CmdError> {
+pub(crate) fn gate(v: &Json) -> Result<(), CmdError> {
     if is_agent(v) && crate::presence::mode() == crate::presence::Mode::Off {
         return Err(CmdError::Disabled("the agent connection is off in WordCraft (Agent tab ▸ Connection ▸ Mode)".into()));
     }
@@ -437,7 +435,7 @@ fn gate(v: &Json) -> Result<(), CmdError> {
 }
 
 /// `document` (a registry id), when given, must be this one.
-fn doc_check(s: &Session, v: &Json) -> Result<(), CmdError> {
+pub(crate) fn doc_check(s: &Session, v: &Json) -> Result<(), CmdError> {
     match p::str(v, "document") {
         Some(d) if d != crate::document_id(s) => Err(CmdError::Params(format!("document {d} is not open in {}", crate::APP_TITLE))),
         _ => Ok(()),
@@ -569,7 +567,19 @@ fn answer(s: &mut Session, v: &Json) -> CmdResult {
     if ping_reply(s, &id, true, by.as_ref()) {
         return Ok(json!({"id": id, "check": "answered"}));
     }
-    let links = links_p(v);
+    let gone = crate::layer(s).questions.iter().find(|q| q.id == id).is_some_and(|q| q.withdrawn || q.hidden);
+    if gone {
+        return Err(bad("this question was withdrawn by the user; drop it"));
+    }
+    // Links inside the text; the old `links` list is appended as a sentence of links.
+    let text = crate::links::store(
+        s,
+        &match v.get("links") {
+            Some(l) => crate::links::append_links(&text, l),
+            None => text,
+        },
+    );
+    let links = Vec::new();
     let ok = crate::update(s, |l| {
         let Some(q) = l.questions.iter_mut().find(|q| q.id == id) else { return false };
         q.status = QuestionStatus::Answered;
@@ -592,25 +602,70 @@ fn answer(s: &mut Session, v: &Json) -> CmdResult {
     if ok { Ok(json!({"id": id})) } else { Err(bad(format!("no question `{id}`"))) }
 }
 
+/// A note on a topic (`topic`), or on a passage (`paragraph` / `quote`: a topic of its own, For
+/// information). Kinds: explanation, source (`url`, `summary`), assumption, decision, faq.
 fn note(s: &mut Session, v: &Json) -> CmdResult {
     gate(v)?;
     doc_check(s, v)?;
-    let text = text_p(v, "text", 20_000)?;
-    let span = as_agent(v, || place(s, v))?;
+    let raw = text_p(v, "text", 20_000)?;
     let kind = match p::str(v, "kind") {
-        Some(k @ ("explanation" | "faq" | "assumption" | "source")) => k.to_string(),
+        Some(k @ ("explanation" | "faq" | "assumption" | "source" | "decision")) => k.to_string(),
         _ => "explanation".into(),
     };
     let title = opt_text(v, "title", 200);
-    let links = links_p(v);
-    let author = if is_agent(v) { Actor::Agent } else { Actor::Human };
-    let a = as_agent(v, || add_anchor(s, &span, "a"))?;
+    let mut links = links_p(v);
+    let url = opt_text(v, "url", 2_000);
+    if !url.is_empty() {
+        links
+            .insert(0, Link { label: if title.is_empty() { url.clone() } else { title.clone() }, href: url, summary: opt_text(v, "summary", 2_000) });
+    }
+    let agent = is_agent(v);
+    let author = if agent { Actor::Agent } else { Actor::Human };
+    let topic = match v.get("topic") {
+        Some(Json::String(_)) | Some(Json::Number(_)) => {
+            let key = v.get("topic").map(|t| t.as_str().map(str::to_string).unwrap_or_else(|| t.to_string())).unwrap_or_default();
+            crate::topics::find(s, &key).ok_or_else(|| bad(format!("no topic `{key}`")))?
+        }
+        _ => {
+            // On a passage: a topic of its own.
+            let span = as_agent(v, || place(s, v))?;
+            let t = crate::update(s, |l| l.fresh_id("t"));
+            let tid = t.clone();
+            crate::update(s, |l| {
+                l.topics.push(crate::layer::Topic {
+                    id: tid.clone(),
+                    status: crate::layer::TopicStatus { kind: crate::layer::StatusKind::Info, by: author, at: crate::now_ms(), ..Default::default() },
+                    created_by: author,
+                    created_at: crate::now_ms(),
+                    ..Default::default()
+                });
+            });
+            let swapped = if agent { crate::template_in(s) } else { None };
+            let r = crate::topics::add_place(s, &t, &span.start_pos(), &span.end_pos(), author, "");
+            s.touch();
+            crate::template_out(s, swapped);
+            r.map_err(CmdError::Failed)?;
+            t
+        }
+    };
+    let text = crate::links::store(s, &raw);
     let id = crate::update(s, |l| {
         let id = l.fresh_id("n");
-        l.notes.push(Note { id: id.clone(), anchor: a, kind, title, text, links, author, at: crate::now_ms() });
+        l.notes.push(Note {
+            id: id.clone(),
+            anchor: String::new(),
+            kind,
+            title,
+            text,
+            links,
+            author,
+            at: crate::now_ms(),
+            topic: topic.clone(),
+            pinned: false,
+        });
         id
     });
-    Ok(json!({"id": id, "paragraph": span.para}))
+    Ok(json!({"id": id, "topic": crate::topics::number(s, &topic)}))
 }
 
 fn decision(s: &mut Session, v: &Json) -> CmdResult {
