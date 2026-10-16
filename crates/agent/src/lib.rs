@@ -35,6 +35,7 @@ pub mod mask;
 pub mod mcp;
 pub mod places;
 pub mod presence;
+pub mod proposals;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod registry;
 #[cfg(not(target_arch = "wasm32"))]
@@ -80,6 +81,7 @@ pub fn install() {
         #[cfg(not(target_arch = "wasm32"))]
         wordcraft_engine::ext::register_commands(runner::specs());
         wordcraft_engine::ext::register_commands(context::specs());
+        wordcraft_engine::ext::register_commands(proposals::specs());
         wordcraft_engine::ext::register_observer(&KEEPER);
     });
 }
@@ -166,6 +168,17 @@ pub struct Render {
     pub filled: Vec<template::Filled>,
     /// Where each block of the rendered document came from in the template.
     pub map: Vec<template::Source>,
+    /// Instead of a client's copy: a topic's proposal shown with its changes tracked (topic,
+    /// option), and what it was made from (to see when it must be made again).
+    pub proposal: Option<(String, String)>,
+    pub proposal_key: String,
+}
+
+/// What [`template_in`] took off the screen, for [`template_out`] to show again.
+#[derive(Clone, Debug)]
+pub struct Shown {
+    client: String,
+    proposal: Option<(String, String)>,
 }
 
 /// The layer's state in a session (`Session::ext`).
@@ -180,6 +193,8 @@ pub struct State {
     pub ping: Option<presence::Ping>,
     /// The person's steps on the layer (undo).
     pub undo: undo::Log,
+    /// Events for the agent (proposals applied, rejected, out of date), numbered (never saved).
+    pub events: Vec<(u64, Json)>,
 }
 
 /// The session's connection check.
@@ -206,6 +221,7 @@ pub fn ensure(s: &mut Session) {
         st.layer = Arc::new(layer::read_from(&s.doc));
         st.render = None;
         st.ping = None;
+        st.events.clear();
         st.undo = undo::Log::default();
     }
 }
@@ -282,7 +298,56 @@ pub fn set_render(s: &mut Session, client: Option<&str>) -> Result<(), String> {
     doc.settings.protection = Some("readOnly".into());
     show_doc(s, doc);
     if let Some(st) = s.ext.get_mut::<State>() {
-        st.render = Some(Render { client: id.to_string(), template, filled, map });
+        st.render = Some(Render { client: id.to_string(), template, filled, map, proposal: None, proposal_key: String::new() });
+    }
+    Ok(())
+}
+
+/// What a proposal option's preview is made from: its steps (a new step makes it again).
+pub fn proposal_key(s: &Session, topic: &str, option: &str) -> String {
+    let l = layer(s);
+    let e = l.topic(topic).and_then(|t| t.edits.as_ref());
+    let n = e.and_then(|e| e.options.iter().find(|o| o.option == option)).map_or(0, |o| o.steps.len());
+    format!("{}:{}:{n}:{:?}", topic, option, e.map(|e| e.state))
+}
+
+/// Shows a topic's proposal option in the document, its changes tracked (read only), or with
+/// `None` puts back what was shown before (the template, or a client's copy).
+pub fn set_proposal_preview(s: &mut Session, want: Option<(String, String)>) -> Result<(), String> {
+    ensure(s);
+    let current = s.ext.get_mut::<State>().and_then(|st| st.render.take());
+    let (base, client) = match current {
+        Some(r) => (r.template, r.client),
+        None => (s.doc.clone(), String::new()),
+    };
+    let dirty = s.dirty;
+    s.doc = base.clone();
+    let Some((topic, option)) = want else {
+        show_doc(s, base);
+        if !client.is_empty() {
+            set_render(s, Some(&client))?;
+        }
+        s.dirty = dirty;
+        return Ok(());
+    };
+    let tracked = proposals::draft(s, &topic, &option, true);
+    let mut doc = match tracked {
+        Ok(d) => d,
+        Err(e) => {
+            // Put back what was there.
+            if !client.is_empty() {
+                let _ = set_render(s, Some(&client));
+            }
+            s.dirty = dirty;
+            return Err(e);
+        }
+    };
+    doc.settings.protection = Some("readOnly".into());
+    let key = proposal_key(s, &topic, &option);
+    show_doc(s, doc);
+    s.dirty = dirty;
+    if let Some(st) = s.ext.get_mut::<State>() {
+        st.render = Some(Render { client, template: base, filled: vec![], map: vec![], proposal: Some((topic, option)), proposal_key: key });
     }
     Ok(())
 }
@@ -323,22 +388,38 @@ pub fn template_range(s: &Session, a: &Pos, b: &Pos) -> Option<(Pos, Pos, bool)>
 
 /// Swaps the template in for a command that must act on it (the agent's edits, Save, Undo) and
 /// returns the client whose preview is to be shown again afterwards.
-pub(crate) fn template_in(s: &mut Session) -> Option<String> {
+pub(crate) fn template_in(s: &mut Session) -> Option<Shown> {
     ensure(s);
     let r = s.ext.get_mut::<State>().and_then(|st| st.render.take())?;
-    let client = r.client.clone();
+    let shown = Shown { client: r.client.clone(), proposal: r.proposal.clone() };
     s.doc = r.template;
-    Some(client)
+    Some(shown)
 }
 
-/// After [`template_in`]: the session's document is the template again; render it for `client`.
-pub(crate) fn template_out(s: &mut Session, client: Option<String>) {
-    let Some(client) = client else { return };
+/// After [`template_in`]: the session's document is the template again; show what was shown.
+pub(crate) fn template_out(s: &mut Session, shown: Option<Shown>) {
+    let Some(shown) = shown else { return };
     // Same document as before the swap (the id bumps only when a new one is opened).
     if let Some(st) = s.ext.get_mut::<State>() {
         st.render = None;
     }
-    let _ = set_render(s, Some(&client));
+    if let Some(p) = shown.proposal {
+        // A proposal applied, rejected or out of date isn't shown any more.
+        let base = s.doc.clone();
+        let pending = layer(s).topic(&p.0).and_then(|t| t.edits.as_ref()).is_some_and(|e| e.state == layer::ProposalState::Pending);
+        if pending && set_proposal_preview(s, Some(p)).is_ok() {
+            if let Some(st) = s.ext.get_mut::<State>()
+                && let Some(r) = st.render.as_mut()
+            {
+                r.client = shown.client;
+            }
+            return;
+        }
+        s.doc = base;
+    }
+    if !shown.client.is_empty() {
+        let _ = set_render(s, Some(&shown.client));
+    }
 }
 
 // ---------------------------------------------------------------- the observer
@@ -348,7 +429,7 @@ static KEEPER: Keeper = Keeper;
 
 thread_local! {
     /// Clients whose previews were swapped out by `before` (nested commands stack up).
-    static SWAPPED: std::cell::RefCell<Vec<Option<String>>> = const { std::cell::RefCell::new(Vec::new()) };
+    static SWAPPED: std::cell::RefCell<Vec<Option<Shown>>> = const { std::cell::RefCell::new(Vec::new()) };
     /// The places before each running command (nested commands stack up).
     static PLACES_BEFORE: std::cell::RefCell<Vec<Option<topics::Before>>> = const { std::cell::RefCell::new(Vec::new()) };
     /// A question asked on the client's copy: the passage in the template (see [`template_range`]).
@@ -391,7 +472,10 @@ impl Observer for Keeper {
             (text_offset(&s.doc, &a), text_offset(&s.doc, &b))
         });
         READER_SEL.with(|w| w.borrow_mut().push(reader_sel));
-        let swapped = if (on_template(id) || asked.is_some()) && !commands::in_agent_exec() { template_in(s) } else { None };
+        // The person's changes to the layer while a copy is shown act on the document underneath
+        // (so their undo step holds that document, not the copy).
+        let layer_step = id.starts_with("agent.") && s.registry.get(id).is_some_and(|c| c.mutates) && !commands::is_agent(params);
+        let swapped = if (on_template(id) || asked.is_some() || layer_step) && !commands::in_agent_exec() { template_in(s) } else { None };
         if let Some(t) = &asked {
             s.sel = Selection { anchor: t.main.0.clone(), focus: t.main.1.clone() };
         }

@@ -268,8 +268,25 @@ fn events(mut w: TcpStream, connect: &Connector, document: Option<String>) {
     let _ = w.flush();
     let mut seen: HashSet<String> = HashSet::new();
     let mut slot: Option<Box<dyn Backend + Send>> = None;
+    // Proposal events from now on (not the ones before the stream opened).
+    let mut after: Option<u64> = None;
     loop {
         if let Ok(b) = backend(&mut slot, connect) {
+            if let Ok(Value::Array(evs)) =
+                b.call("engine.execute", json!({"command": "agent.events", "params": {"after": after.unwrap_or(0), "actor": "agent", "poll": true}}))
+            {
+                for e in &evs {
+                    let n = e.get("seq").and_then(Value::as_u64).unwrap_or(0);
+                    let fresh = after.is_some();
+                    after = Some(after.unwrap_or(0).max(n));
+                    if fresh && for_document(e, document.as_deref()) && writeln!(w, "{e}").and_then(|()| w.flush()).is_err() {
+                        return;
+                    }
+                }
+                if after.is_none() {
+                    after = Some(0);
+                }
+            }
             match b.call(
                 "engine.execute",
                 json!({"command": "agent.questions", "params": {"status": "pending", "actor": "agent", "masked": true, "poll": true}}),

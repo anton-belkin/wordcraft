@@ -552,7 +552,7 @@ fn only_a_person_sets_agreed_and_status_changes_undo() {
     agent(&mut s, "agent.proposeAgreed", json!({"topic": 1, "reasons": "the partner confirmed it"})).unwrap();
     let t = topics_of(&mut s);
     assert_eq!(t["topics"][0]["status"], "revise");
-    assert_eq!(t["topics"][0]["proposal"]["status"], "agreed");
+    assert_eq!(t["topics"][0]["agreedProposal"]["status"], "agreed");
     assert!(t["topics"][0]["statusText"].as_str().unwrap().contains("[§2](para:2)"), "{t}");
     // The person confirms with one click; ⌘Z takes it back.
     s.run("agent.confirmAgreed", &json!({"topic": 1})).unwrap();
@@ -811,4 +811,110 @@ fn a_spoken_question_points_at_passages_and_reaches_the_agent_with_markers() {
     // A question with the agent can't be dismissed this way; nor can the agent speak.
     assert!(s.run("agent.removeQuestion", &json!({"id": id})).is_err());
     assert!(agent(&mut s, "agent.spoken", json!({"id": id, "text": "x"})).is_err());
+}
+
+// ---------------------------------------------------------------- proposals
+
+fn topic_on(s: &mut Session, text: &str) -> String {
+    select(s, text);
+    s.run("agent.ask", &json!({"text": "Can you fix this?"})).unwrap()["topic"].as_str().unwrap().to_string()
+}
+
+fn propose(s: &mut Session, topic: &str, option: &str, quote: &str, text: &str) -> Result<Value, String> {
+    agent(
+        s,
+        "agent.exec",
+        json!({"command": "text.insert", "params": {"text": text}, "at": {"paragraph": 2, "quote": quote}, "reason": "clearer", "topic": topic, "option": option}),
+    )
+}
+
+#[test]
+fn a_proposal_changes_nothing_until_the_person_applies_one_option_in_one_step() {
+    let mut s = letter();
+    let t = topic_on(&mut s, "payable in advance");
+    let before = body(&s);
+    // Recorded, checked on the draft; the document doesn't change.
+    let r = propose(&mut s, &t, "A", "payable in advance", "payable within 30 days").unwrap();
+    assert_eq!(r["proposed"], true);
+    propose(&mut s, &t, "B", "payable in advance", "payable on signature").unwrap();
+    agent(&mut s, "agent.describeOption", json!({"topic": t, "option": "B", "title": "On signature", "why": "the client asked"})).unwrap();
+    assert_eq!(body(&s), before);
+    // The agent sees what's pending, and can read a draft.
+    let read = agent(&mut s, "agent.read", json!({})).unwrap();
+    assert_eq!(read["paragraphs"][2]["pending"][0]["option"], "A", "{read}");
+    let draft = agent(&mut s, "agent.read", json!({"view": "proposal", "topic": t, "option": "B"})).unwrap();
+    assert!(draft["paragraphs"][2]["text"].as_str().unwrap().contains("payable on signature"));
+    let p = &topics_of(&mut s)["topics"][0]["proposal"];
+    assert_eq!(p["state"], "pending");
+    assert_eq!(p["options"][1]["title"], "On signature");
+    assert_eq!(p["options"][0]["changes"], 1);
+    // Only the person applies.
+    assert!(agent(&mut s, "agent.applyProposal", json!({"topic": t, "option": "B"})).is_err());
+    // A preview shows the draft with its changes tracked; the agent still reads the document.
+    s.run("agent.previewProposal", &json!({"topic": t, "option": "B"})).unwrap();
+    assert!(body(&s).contains("on signature"));
+    assert!(!s.doc.revisions.is_empty(), "the change shows as a tracked revision");
+    assert!(!agent(&mut s, "agent.read", json!({})).unwrap().to_string().contains("on signature"));
+    s.run("agent.previewProposal", &json!({})).unwrap();
+    assert_eq!(body(&s), before);
+    // Apply B: one undo step, a decision note.
+    let undo_before = s.undo_labels().len();
+    s.run("agent.applyProposal", &json!({"topic": t, "option": "B"})).unwrap();
+    assert!(body(&s).contains("Our fee is fixed and payable on signature."), "{}", body(&s));
+    assert_eq!(s.undo_labels().len(), undo_before + 1, "one undo step");
+    let l = crate::layer(&s);
+    assert!(l.notes.iter().any(|n| n.kind == "decision" && n.title == "chose B: On signature"));
+    assert_eq!(topics_of(&mut s)["topics"][0]["proposal"]["state"], "applied");
+    let ev = agent(&mut s, "agent.events", json!({})).unwrap();
+    assert_eq!(ev[0]["event"], "proposal_applied");
+    // ⌘Z: the document and the proposal as they were.
+    s.run("edit.undo", &json!({})).unwrap();
+    assert_eq!(body(&s), before);
+    assert_eq!(topics_of(&mut s)["topics"][0]["proposal"]["state"], "pending");
+    assert!(!crate::layer(&s).notes.iter().any(|n| n.kind == "decision"));
+}
+
+#[test]
+fn a_proposal_that_no_longer_fits_is_out_of_date_and_overlaps_go_stale() {
+    let mut s = letter();
+    let t1 = topic_on(&mut s, "payable in advance");
+    let t2 = topic_on(&mut s, "fixed");
+    propose(&mut s, &t1, "A", "fixed and payable in advance", "variable and payable monthly").unwrap();
+    propose(&mut s, &t2, "A", "fixed", "agreed").unwrap();
+    // Applying the first changes the text the second needs: it goes out of date.
+    s.run("agent.applyProposal", &json!({"topic": t1})).unwrap();
+    let ts = topics_of(&mut s);
+    let state = |n: usize| ts["topics"].as_array().unwrap().iter().find(|x| x["id"] == [&t1, &t2][n].as_str()).unwrap()["proposal"]["state"].clone();
+    assert_eq!(state(1), "outdated");
+    // Nothing is applied from an out-of-date one.
+    let before = body(&s);
+    s.run("agent.discardProposal", &json!({"topic": t2, "actor": "agent"})).unwrap();
+    propose(&mut s, &t2, "A", "variable", "flexible").unwrap();
+    // The person edits that text meanwhile.
+    select(&mut s, "variable");
+    s.run("text.insert", &json!({"text": "set"})).unwrap();
+    let edited = body(&s);
+    assert_ne!(edited, before);
+    let e = s.run("agent.applyProposal", &json!({"topic": t2})).unwrap_err().to_string();
+    assert!(e.contains("out of date"), "{e}");
+    assert_eq!(body(&s), edited);
+    let ev = agent(&mut s, "agent.events", json!({})).unwrap();
+    assert!(ev.as_array().unwrap().iter().filter(|x| x["event"] == "proposal_outdated").count() >= 2, "{ev}");
+}
+
+#[test]
+fn a_rejection_with_a_comment_is_a_follow_up_in_the_topic() {
+    let mut s = letter();
+    let t = topic_on(&mut s, "payable in advance");
+    propose(&mut s, &t, "A", "payable in advance", "payable later").unwrap();
+    s.run("agent.rejectProposal", &json!({"topic": t, "comment": "Keep it in advance, but say 30 days"})).unwrap();
+    let qs = agent(&mut s, "agent.questions", json!({"status": "pending"})).unwrap();
+    assert!(qs.to_string().contains("I rejected your proposal: Keep it in advance, but say 30 days"), "{qs}");
+    let ev = agent(&mut s, "agent.events", json!({})).unwrap();
+    assert_eq!(ev[0]["event"], "proposal_rejected");
+    assert_eq!(ev[0]["comment"], "Keep it in advance, but say 30 days");
+    // ⌘Z takes the rejection and its follow-up back.
+    s.run("edit.undo", &json!({})).unwrap();
+    assert_eq!(topics_of(&mut s)["topics"][0]["proposal"]["state"], "pending");
+    assert!(!agent(&mut s, "agent.questions", json!({"status": "pending"})).unwrap().to_string().contains("I rejected"));
 }

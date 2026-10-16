@@ -161,6 +161,114 @@ fn chip(ui: &mut Ui, text: &str, color: Color32) {
         });
 }
 
+/// The agent's proposed changes: the options, Apply option X, Reject (with a comment).
+fn edits(st: &mut AgentUi, app: &WordApp, ui: &mut Ui, topic: &Topic, t: &Tokens, p: &Palette, acts: &mut Vec<Act>) {
+    use wordcraft_agent::layer::ProposalState;
+    let Some(e) = &topic.edits else { return };
+    let tint = |c: Color32| Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 22);
+    match e.state {
+        ProposalState::Applied => {
+            let title = e.options.iter().find(|o| o.option == e.chosen).map(|o| o.title.clone()).unwrap_or_default();
+            ui.label(
+                RichText::new(format!("Applied option {}{}", e.chosen, if title.is_empty() { String::new() } else { format!(": {title}") }))
+                    .color(p.answered)
+                    .small(),
+            );
+            return;
+        }
+        ProposalState::Rejected => {
+            let c = if e.comment.is_empty() { String::new() } else { format!(": “{}”", clip(&e.comment, 80)) };
+            ui.label(RichText::new(format!("You rejected the proposal{c}")).color(t.text_dim).small());
+            return;
+        }
+        ProposalState::Outdated => {
+            egui::Frame::NONE.fill(tint(p.failed)).corner_radius(6.0).inner_margin(6).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(RichText::new("The agent's proposal is out of date, ask the agent to redo").color(p.failed).font(theme::semibold(11.5)));
+            });
+            return;
+        }
+        ProposalState::Pending => {}
+    }
+    let chosen = st
+        .option_of
+        .get(&topic.id)
+        .filter(|o| e.options.iter().any(|x| &x.option == *o))
+        .cloned()
+        .or_else(|| e.options.first().map(|o| o.option.clone()))
+        .unwrap_or_default();
+    let Some(opt) = e.options.iter().find(|o| o.option == chosen) else { return };
+    egui::Frame::NONE.fill(tint(p.agent)).corner_radius(6.0).inner_margin(8).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            crate::sparkle(ui, p.agent, 12.0);
+            let n = opt.steps.len();
+            ui.label(
+                RichText::new(format!("The agent proposes {n} change{}", if n == 1 { "" } else { "s" })).color(p.agent).font(theme::semibold(12.0)),
+            );
+        });
+        // The options, side by side: switching changes the preview in the document.
+        if e.options.len() > 1 {
+            ui.horizontal_wrapped(|ui| {
+                for o in &e.options {
+                    let label = if o.title.is_empty() { format!("Option {}", o.option) } else { format!("{} · {}", o.option, clip(&o.title, 24)) };
+                    if ui.selectable_label(o.option == chosen, RichText::new(label).size(11.5)).clicked() {
+                        st.option_of.insert(topic.id.clone(), o.option.clone());
+                    }
+                }
+            });
+        }
+        if !opt.title.is_empty() {
+            ui.label(RichText::new(&opt.title).font(theme::semibold(12.0)));
+        }
+        if !opt.why.is_empty() {
+            rich(ui, app, &opt.why, t, t.text_dim, acts);
+        }
+        for step in &opt.steps {
+            ui.label(RichText::new(format!("• {}", clip(&step.summary, 140))).size(11.5).color(t.text));
+        }
+        let previewing =
+            wordcraft_agent::render_state(&app.session).and_then(|r| r.proposal.clone()).is_some_and(|(tp, o)| tp == topic.id && o == chosen);
+        let mut show = !st.no_preview;
+        if ui
+            .checkbox(&mut show, RichText::new(if previewing { "Shown in the document (read only)" } else { "Show in the document" }).size(11.0))
+            .changed()
+        {
+            st.no_preview = !show;
+            if show {
+                st.open_topic = Some(topic.id.clone());
+            }
+        }
+        ui.horizontal(|ui| {
+            let apply = egui::Button::new(RichText::new(format!("Apply option {chosen}")).strong().color(Color32::WHITE)).fill(p.agent);
+            if ui.add(apply).on_hover_text("Make these changes in the document: one step you can undo").clicked() {
+                acts.push(Act::Run("agent.applyProposal", json!({"topic": topic.id, "option": chosen})));
+            }
+            if ui.button("Reject").clicked() {
+                st.rejecting = if st.rejecting.as_deref() == Some(topic.id.as_str()) { None } else { Some(topic.id.clone()) };
+            }
+        });
+        if st.rejecting.as_deref() == Some(topic.id.as_str()) {
+            ui.add(
+                egui::TextEdit::multiline(&mut st.reject_text)
+                    .hint_text("Why (optional): the agent gets it as a follow-up")
+                    .desired_rows(2)
+                    .desired_width(f32::INFINITY),
+            );
+            ui.horizontal(|ui| {
+                if ui.button("Reject the proposal").clicked() {
+                    acts.push(Act::Run("agent.rejectProposal", json!({"topic": topic.id, "comment": st.reject_text.trim()})));
+                    st.reject_text.clear();
+                    st.rejecting = None;
+                }
+                if ui.small_button("Cancel").clicked() {
+                    st.rejecting = None;
+                }
+            });
+        }
+    });
+}
+
 /// The topic's number as a marker, the same as on the page.
 fn number(ui: &mut Ui, app: &WordApp, topic: &str, n: usize, t: &Tokens) {
     let (color, working, unread) = marker_state(app, topic, t);
@@ -268,6 +376,7 @@ fn topic_card(st: &mut AgentUi, app: &WordApp, ui: &mut Ui, l: &Layer, rt: &RTop
                     });
                 });
         }
+        edits(st, app, ui, topic, t, p, acts);
         ui.add_space(4.0);
         // Places.
         ui.label(RichText::new("Places").color(t.text_dim).small());
@@ -464,8 +573,15 @@ fn ask_box(st: &mut AgentUi, app: &mut WordApp, ui: &mut Ui, t: &Tokens, p: &Pal
         }
         ui.label(RichText::new(if cfg!(target_os = "macos") { "Cmd+Enter" } else { "Ctrl+Enter" }).color(t.text_disabled).small());
     });
+    let proposal_shown = wordcraft_agent::render_state(&app.session).is_some_and(|r| r.proposal.is_some());
     if let Some(w) = &st.asked_where {
         ui.label(RichText::new(w).color(t.text_dim).small());
+    } else if proposal_shown {
+        ui.label(
+            RichText::new("You are looking at a proposal (read only): apply or reject it, or untick Show in the document to ask.")
+                .color(t.text_dim)
+                .small(),
+        );
     } else if preview {
         ui.label(RichText::new("You are reading a client's copy: questions go on the template it was rendered from.").color(t.text_dim).small());
     }

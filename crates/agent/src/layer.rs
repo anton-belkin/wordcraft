@@ -284,6 +284,9 @@ pub struct Topic {
     pub status: TopicStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proposal: Option<Proposal>,
+    /// The agent's proposed changes (options of recorded commands), until applied or rejected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edits: Option<EditProposal>,
     #[serde(default)]
     pub created_by: Actor,
     #[serde(default)]
@@ -298,6 +301,79 @@ impl Topic {
     pub fn visible(&self) -> bool {
         self.places.is_empty() || self.live_places().next().is_some()
     }
+}
+
+/// One recorded command of a proposal: what, where (in the agent's view of the draft it ran on)
+/// and why.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Step {
+    pub command: String,
+    #[serde(default)]
+    pub params: serde_json::Value,
+    /// `{paragraph, quote?, occurrence?}`.
+    #[serde(default)]
+    pub at: serde_json::Value,
+    /// The paragraph's (masked) text then, to find it again.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub para_text: String,
+    #[serde(default)]
+    pub reason: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source: String,
+    /// What it does, in a line.
+    #[serde(default)]
+    pub summary: String,
+}
+
+/// One option of a proposal (A, B…).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ProposalOption {
+    pub option: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub why: String,
+    #[serde(default)]
+    pub steps: Vec<Step>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProposalState {
+    #[default]
+    Pending,
+    Applied,
+    Rejected,
+    /// A step no longer fits the document: the agent redoes it.
+    Outdated,
+}
+
+impl ProposalState {
+    pub fn id(self) -> &'static str {
+        match self {
+            ProposalState::Pending => "pending",
+            ProposalState::Applied => "applied",
+            ProposalState::Rejected => "rejected",
+            ProposalState::Outdated => "outdated",
+        }
+    }
+}
+
+/// A topic's proposed changes.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct EditProposal {
+    #[serde(default)]
+    pub options: Vec<ProposalOption>,
+    #[serde(default)]
+    pub state: ProposalState,
+    /// The option applied.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub chosen: String,
+    /// The person's comment on a rejection.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub comment: String,
+    #[serde(default)]
+    pub at: u64,
 }
 
 /// The bookmark name of a place.

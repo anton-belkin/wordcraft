@@ -475,7 +475,10 @@ pub fn topic_json(s: &Session, view: &crate::mask::View, t: &topics::RTopic, ful
         "unreadAnswers": unread,
     });
     if let Some(p) = &topic.proposal {
-        o["proposal"] = json!({"status": "agreed", "reasons": crate::links::for_agent(s, &p.reasons)});
+        o["agreedProposal"] = json!({"status": "agreed", "reasons": crate::links::for_agent(s, &p.reasons)});
+    }
+    if let Some(p) = crate::proposals::proposal_json(s, topic) {
+        o["proposal"] = p;
     }
     if full {
         let mut d: Vec<&Question> = qs.clone();

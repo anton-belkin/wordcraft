@@ -97,7 +97,7 @@ pub(crate) fn links_p(v: &Json) -> Vec<Link> {
 }
 
 /// `paragraph` / `quote` / `occurrence` params, in the agent's (masked) view.
-fn place_in(view: &View, v: &Json) -> Result<Option<Span>, CmdError> {
+pub(crate) fn place_in(view: &View, v: &Json) -> Result<Option<Span>, CmdError> {
     let para = p::u64(v, "paragraph").map(|n| n.min(usize::MAX as u64) as usize);
     let quote = p::str(v, "quote");
     if para.is_none() && quote.is_none() {
@@ -357,7 +357,11 @@ fn context(s: &mut Session, v: &Json) -> CmdResult {
 fn read(s: &mut Session, v: &Json) -> CmdResult {
     gate(v)?;
     doc_check(s, v)?;
+    if p::str(v, "view") == Some("proposal") {
+        return crate::proposals::read_proposal(s, v, read);
+    }
     let view = crate::view(s);
+    let marks = crate::proposals::pending_marks(s);
     let from = p::u64(v, "from").unwrap_or(0).min(usize::MAX as u64) as usize;
     let count = p::u64(v, "count").unwrap_or(400).clamp(1, 2_000) as usize;
     let paras: Vec<Json> = view
@@ -375,6 +379,10 @@ fn read(s: &mut Session, v: &Json) -> CmdResult {
             }
             if !m.private.is_empty() {
                 o["clientData"] = json!(m.private);
+            }
+            // What a proposal not yet applied would change here.
+            if let Some(p) = crate::proposals::pending_json(s, &marks, m.index) {
+                o["pending"] = p;
             }
             o
         })
@@ -406,6 +414,32 @@ fn question_json(s: &Session, view: &View, q: &Question) -> Json {
             a.insert("text".into(), json!(crate::links::for_agent(s, &t)));
         }
         m.remove("error");
+        // Proposals not yet applied on the same paragraphs: take them into account.
+        let paras: Vec<u64> = {
+            let mut v: Vec<u64> = vec![];
+            if let Some(n) = m.get("paragraph").and_then(Json::as_u64) {
+                v.push(n);
+            }
+            let view_paras: Vec<&Path> = view.paras.iter().map(|x| &x.path).collect();
+            if let Some(rt) = crate::topics::resolve(s).iter().find(|t| t.id == q.topic) {
+                for pl in &rt.places {
+                    if let Some(f) = &pl.from
+                        && let Some(i) = view_paras.iter().position(|p| **p == f.path)
+                    {
+                        v.push(i as u64);
+                    }
+                }
+            }
+            v
+        };
+        let near: Vec<Json> = crate::proposals::pending_marks(s)
+            .into_iter()
+            .filter(|(p, t, ..)| paras.contains(&(*p as u64)) && *t != q.topic)
+            .map(|(p, t, o, sum)| json!({"topic": crate::topics::number(s, &t), "option": o, "paragraph": p, "summary": sum}))
+            .collect();
+        if !near.is_empty() {
+            m.insert("pendingNearby".into(), json!(near));
+        }
         if !q.refs.is_empty() {
             // What the reader pointed at while speaking: in the text where they pointed, and listed.
             let refs: Vec<Json> = q.refs.iter().map(|r| ref_json(s, view, r)).collect();
@@ -829,6 +863,13 @@ fn exec(s: &mut Session, v: &Json) -> CmdResult {
     }
     let reason = text_p(v, "reason", 4_000).map_err(|_| bad("`reason` is required: say why you are changing the document"))?;
     let source = opt_text(v, "source", 2_000);
+    // In a topic: a proposal, the document doesn't change.
+    if v.get("topic").is_some_and(|t| !t.is_null()) {
+        if positional {
+            return Err(bad("a proposal records changes: point at text with `at` instead of selecting"));
+        }
+        return crate::proposals::propose(s, v, &command, params, reason, source);
+    }
     // While a client's rendering is shown, the agent edits the template underneath.
     let swapped = crate::template_in(s);
     let r = exec_on(s, &command, params, v, reason, source);
@@ -845,7 +886,7 @@ fn exec_on(s: &mut Session, command: &str, params: Json, v: &Json, reason: Strin
     r
 }
 
-fn exec_at(s: &mut Session, command: &str, params: Json, v: &Json, reason: String, source: String) -> CmdResult {
+pub(crate) fn exec_at(s: &mut Session, command: &str, params: Json, v: &Json, reason: String, source: String) -> CmdResult {
     let view = crate::view(s);
     let sel = match v.get("at").filter(|a| a.is_object()) {
         Some(at) => {

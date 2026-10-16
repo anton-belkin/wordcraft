@@ -22,6 +22,10 @@ once with \"here\", don't investigate. TOPICS: every question belongs to a topic
 a status (open, revise, agreed, info), notes and a discussion. Link inside the text ([§12](para:12), [3.2](place:3.2), [topic 3](topic:3)); \
 add places that a change here affects (add_places, with a reason); leave notes that will still matter after the chat (add_note with \
 topic); never mark Agreed: propose it (propose_agreed). A question with status withdrawn was taken back by the user: drop it. \
+PROPOSALS: in a topic, change the document only by proposing: run_command with `topic` (and `option` A/B/C when there is a real \
+choice; describe_option gives each a title and a why). The document doesn't change; the person applies one option in the document \
+(never ask for confirmation in the chat). Reads mark what pending proposals touch (pending); questions carry pendingNearby: don't \
+contradict those. A rejected proposal's comment arrives as a follow-up question; an outdated one must be redone. \
 VOICE: ⟦n⟧ in a question is what the user pointed at while speaking (expanded as ⟦n: §12 “quote”⟧, each a place of the topic), \
 see refs; resolve \"this\", \"that one\", \"это\" from those and the context.";
 
@@ -72,8 +76,8 @@ pub fn tools() -> Vec<Value> {
         ),
         tool(
             "read_document",
-            "Read paragraphs (numbered, with style). Client data reads as {{placeholder}}.",
-            json!({"from": n("First paragraph (default 0)"), "count": n("How many (default 400)")}),
+            "Read paragraphs (numbered, with style). Client data reads as {{placeholder}}. A paragraph that a proposal not yet applied would change carries pending: [{topic, option, summary}]. view \"proposal\" with topic (and option) reads that proposal's draft instead.",
+            json!({"from": n("First paragraph (default 0)"), "count": n("How many (default 400)"), "view": {"type": "string", "enum": ["document", "proposal"]}, "topic": s("With view proposal: the topic"), "option": s("With view proposal: the option (default the first)")}),
             &[],
             true,
         ),
@@ -163,9 +167,23 @@ pub fn tools() -> Vec<Value> {
         ),
         tool("get_layer", "The whole agent layer: questions, notes, client-data placeholders, history.", json!({}), &[], true),
         tool(
+            "describe_option",
+            "Name an option of a topic's proposal and say why: the person sees the title and the why beside its changes.",
+            json!({"topic": s("Topic id or number"), "option": s("A, B, C…"), "title": s("A few words"), "why": s("Why this option (links inside)")}),
+            &["topic", "option", "title"],
+            false,
+        ),
+        tool(
+            "discard_proposal",
+            "Drop an option of a topic's proposal, or the whole proposal (to redo it).",
+            json!({"topic": s("Topic id or number"), "option": s("A, B…; omit for the whole proposal")}),
+            &["topic"],
+            false,
+        ),
+        tool(
             "run_command",
-            "Change the document with a WordCraft command (text.insert, format.bold, para.style…; see list_commands). `at` selects the text first. Logged as yours with the reason and source. Commands that read or search the real text are refused.",
-            json!({"command": s("Command id"), "params": {"type": "object"}, "at": {"type": "object", "description": "{paragraph, quote?, occurrence?}: the text to act on", "properties": {"paragraph": para(), "quote": quote(), "occurrence": n("Which match of the quote (0-based)")}}, "reason": s("Why"), "source": s("What it is based on")}),
+            "Change the document with a WordCraft command (text.insert, format.bold, para.style…; see list_commands). `at` selects the text first. Logged as yours with the reason and source. Commands that read or search the real text are refused. With `topic` the document does NOT change: the command is recorded in that topic's proposal (option A unless `option` says otherwise) and checked on its draft; the person applies it in the document. In a topic, always propose this way; don't ask for confirmation in the chat.",
+            json!({"command": s("Command id"), "params": {"type": "object"}, "at": {"type": "object", "description": "{paragraph, quote?, occurrence?}: the text to act on", "properties": {"paragraph": para(), "quote": quote(), "occurrence": n("Which match of the quote (0-based)")}}, "reason": s("Why"), "source": s("What it is based on"), "topic": s("Propose in this topic (id or number) instead of changing the document"), "option": s("The option it belongs to: A (default), B, C… when there is a real choice")}),
             &["command", "reason"],
             false,
         ),
@@ -224,7 +242,7 @@ pub fn call(b: &mut dyn Backend, name: &str, args: &Value) -> Result<Value, Stri
         "attach" => exec_with(b, "agent.attach", pick(args, &["label"]), args),
         "detach" => exec_with(b, "agent.detach", pick(args, &["listener"]), args),
         "get_context" => exec_with(b, "agent.context", json!({}), args),
-        "read_document" | "read_range" => exec_with(b, "agent.read", pick(args, &["from", "count"]), args),
+        "read_document" | "read_range" => exec_with(b, "agent.read", pick(args, &["from", "count", "view", "topic", "option"]), args),
         "list_questions" => exec_with(b, "agent.questions", pick(args, &["status"]), args),
         "wait_for_questions" => {
             let secs = args.get("timeout_seconds").and_then(Value::as_f64).filter(|x| x.is_finite()).unwrap_or(25.0).clamp(0.0, 50.0);
@@ -254,7 +272,9 @@ pub fn call(b: &mut dyn Backend, name: &str, args: &Value) -> Result<Value, Stri
         "propose_agreed" => exec_with(b, "agent.proposeAgreed", pick(args, &["topic", "reasons"]), args),
         "log_decision" => exec_with(b, "agent.decision", pick(args, &["text", "paragraph", "quote", "source"]), args),
         "get_layer" => exec_with(b, "agent.layer", json!({}), args),
-        "run_command" => exec_with(b, "agent.exec", pick(args, &["command", "params", "at", "reason", "source"]), args),
+        "run_command" => exec_with(b, "agent.exec", pick(args, &["command", "params", "at", "reason", "source", "topic", "option"]), args),
+        "describe_option" => exec_with(b, "agent.describeOption", pick(args, &["topic", "option", "title", "why"]), args),
+        "discard_proposal" => exec_with(b, "agent.discardProposal", pick(args, &["topic", "option"]), args),
         "list_commands" => {
             let all = b.call("engine.commands", json!({}))?;
             let q = args.get("search").and_then(Value::as_str).unwrap_or("").to_lowercase();

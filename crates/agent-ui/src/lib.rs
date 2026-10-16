@@ -137,6 +137,15 @@ pub(crate) struct AgentUi {
     pub new_topic: bool,
     /// Where the last question asked on a client's copy went in the template.
     pub asked_where: Option<String>,
+    /// The option shown per topic's proposal (else its first).
+    pub option_of: std::collections::HashMap<String, String>,
+    /// Reject's comment box, open for this topic.
+    pub rejecting: Option<String>,
+    pub reject_text: String,
+    /// The person turned the proposal preview off.
+    pub no_preview: bool,
+    /// A preview that couldn't be made (its key), not tried again.
+    pub preview_failed: Option<String>,
     /// A Get ready step ran at (ms; 0: none waiting): the lamp shows Waiting until someone comes.
     pub waiting_since: u64,
     /// "Ask … to collaborate" done, per document (`cowork@<doc>`, `session@<doc>`).
@@ -325,6 +334,44 @@ pub(crate) fn go_to(app: &mut WordApp, sp: &Span) {
 }
 
 impl AgentUi {
+    /// The proposal of the topic open in the pane, shown in the document (its changes tracked).
+    fn sync_preview(&mut self, app: &mut WordApp) {
+        let s = &app.session;
+        let l = wordcraft_agent::layer(s);
+        let want = if self.open && self.tab == Tab::Selection && !self.no_preview { self.open_topic.clone() } else { None }.and_then(|t| {
+            let e = l.topic(&t).and_then(|x| x.edits.as_ref()).filter(|e| e.state == wordcraft_agent::layer::ProposalState::Pending)?;
+            let o = self
+                .option_of
+                .get(&t)
+                .filter(|o| e.options.iter().any(|x| &x.option == *o))
+                .cloned()
+                .or_else(|| e.options.first().map(|x| x.option.clone()))?;
+            Some((t, o))
+        });
+        let cur = wordcraft_agent::render_state(s).and_then(|r| r.proposal.clone().map(|p| (p, r.proposal_key.clone())));
+        match (want, cur) {
+            (None, None) => {}
+            (None, Some(_)) => {
+                if let Err(e) = app.run("agent.previewProposal", json!({})) {
+                    app.status(e);
+                }
+            }
+            (Some(w), cur) => {
+                let key = wordcraft_agent::proposal_key(s, &w.0, &w.1);
+                if cur.as_ref().is_some_and(|(p, k)| *p == w && *k == key) || self.preview_failed.as_deref() == Some(key.as_str()) {
+                    return;
+                }
+                match app.run("agent.previewProposal", json!({"topic": w.0, "option": w.1})) {
+                    Ok(_) => self.preview_failed = None,
+                    Err(e) => {
+                        self.preview_failed = Some(key);
+                        app.status(e);
+                    }
+                }
+            }
+        }
+    }
+
     fn act(&mut self, app: &mut WordApp, ctx: &egui::Context) {
         for a in std::mem::take(&mut self.acts) {
             match a {
@@ -476,7 +523,16 @@ impl UiExtension for AgentUi {
             self.open = open;
             self.tab = Tab::parse(tab.split(':').next().unwrap_or(""));
             // `ask:<question>`: asked on the selection, as the box's Ask button does.
-            if let Some(q) = tab.strip_prefix("ask:") {
+            if let Some(rest) = tab.strip_prefix("option:") {
+                // `option:3:B`: topic 3 open, its proposal's option B shown.
+                self.tab = Tab::Selection;
+                if let Some((n, o)) = rest.split_once(':')
+                    && let Some(t) = wordcraft_agent::topics::find(&app.session, n)
+                {
+                    self.option_of.insert(t.clone(), o.to_string());
+                    self.open_topic = Some(t);
+                }
+            } else if let Some(q) = tab.strip_prefix("ask:") {
                 self.acts.push(Act::Run("agent.ask", serde_json::json!({"text": q})));
             } else if let Some(n) = tab.split_once(':').map(|(_, n)| n) {
                 // `selection:3`: topic 3 open.
@@ -484,6 +540,7 @@ impl UiExtension for AgentUi {
             }
         }
         self.act(app, ctx);
+        self.sync_preview(app);
         #[cfg(not(target_arch = "wasm32"))]
         {
             self.voice.frame(app, ctx);

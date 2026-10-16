@@ -1,0 +1,26 @@
+{"start": "demo", "width": 1440, "height": 900}
+{"cmd": "select.text", "params": {"text": "payable within 30 days"}}
+{"cmd": "agent.ask", "params": {"text": "Can we make the payment term clearer?"}}
+{"cmd": "agent.exec", "params": {"actor": "agent", "topic": 1, "option": "A", "command": "text.insert", "params": {"text": "payable within 30 days of the invoice date"}, "at": {"paragraph": 13, "quote": "payable within 30 days"}, "reason": "say from when the 30 days run"}}
+{"cmd": "agent.exec", "params": {"actor": "agent", "topic": 1, "option": "B", "command": "text.insert", "params": {"text": "payable on signature"}, "at": {"paragraph": 13, "quote": "payable within 30 days"}, "reason": "advance billing means payment up front"}}
+{"cmd": "agent.exec", "params": {"actor": "agent", "topic": 1, "option": "B", "command": "format.bold", "params": {}, "at": {"paragraph": 13, "quote": "invoiced in advance"}, "reason": "the key term"}}
+{"cmd": "agent.describeOption", "params": {"actor": "agent", "topic": 1, "option": "A", "title": "From the invoice date", "why": "Keeps 30 days and says when they start."}}
+{"cmd": "agent.describeOption", "params": {"actor": "agent", "topic": 1, "option": "B", "title": "On signature", "why": "Matches [§13](para:13): invoiced in advance."}}
+{"pane": "option:1:A"}
+{"steps": 8}
+{"shot": "SHOTS/p1-option-a-preview.png"}
+{"pane": "option:1:B"}
+{"steps": 8}
+{"shot": "SHOTS/p2-option-b-preview.png"}
+{"cmd": "agent.applyProposal", "params": {"topic": 1, "option": "B"}}
+{"steps": 8}
+{"shot": "SHOTS/p3-applied.png"}
+{"cmd": "select.text", "params": {"text": "three months"}}
+{"cmd": "agent.ask", "params": {"text": "Is three months usual?"}}
+{"cmd": "agent.exec", "params": {"actor": "agent", "topic": 2, "command": "text.insert", "params": {"text": "one month"}, "at": {"paragraph": 20, "quote": "three months"}, "reason": "market practice"}}
+{"cmd": "select.text", "params": {"text": "three months"}}
+{"cmd": "text.insert", "params": {"text": "two months"}}
+{"cmd": "agent.applyProposal", "params": {"topic": 2}}
+{"pane": "selection:2"}
+{"steps": 8}
+{"shot": "SHOTS/p4-outdated.png"}

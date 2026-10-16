@@ -77,6 +77,21 @@ discussion. `list_topics` and `get_topic` show them; questions carry their topic
 - **Never mark Agreed: propose it** (`propose_agreed` with your reasons); you may set open, revise or info with `set_status`.
 - A question with status `withdrawn` was taken back by the person (undo): drop it.
 
+## Proposals: change a topic by proposing
+
+- In a topic, never change the document directly: `run_command` with `topic` records the change in
+  the topic's proposal and checks it on a draft. The document stays as it is; the person sees "the
+  agent proposes N changes" with a preview and applies it there, in one step they can undo.
+- Don't ask for confirmation in the chat: the person decides in the document.
+- When there is a real choice, offer options: `option` "A", "B"… on `run_command`, and
+  `describe_option {topic, option, title, why}` for each. One option is one complete change.
+- `read_document` marks paragraphs a pending proposal would change (`pending`); `read_document
+  {view: "proposal", topic, option}` reads the draft. Questions carry `pendingNearby`: don't
+  contradict those proposals.
+- Redo yours with `discard_proposal` and new commands. Events: `proposal_applied`,
+  `proposal_rejected` (the comment also arrives as a follow-up question), `proposal_outdated` (the
+  document changed under it: read again and propose again).
+
 ## Privacy — non-negotiable
 
 Client data reads as `{{placeholder}}` everywhere (`get_context.clientData`). So:

@@ -51,6 +51,14 @@ pub enum Op {
     },
     /// A place the person added to a topic (bookmark only).
     AddPlace,
+    /// A proposal applied or rejected (and the follow-up question or decision note it made).
+    Proposal {
+        topic: String,
+        before: Box<crate::layer::EditProposal>,
+        after: Box<crate::layer::EditProposal>,
+        question: Option<String>,
+        note: Option<Note>,
+    },
     /// The document's context (the Agent tab's Context group), before and after.
     Context {
         before: Option<crate::context::Context>,
@@ -150,6 +158,7 @@ fn undo(s: &mut Session, op: &Op) {
         }
         Op::AddPlace => {}
         Op::Context { before, .. } => set_context(s, before),
+        Op::Proposal { topic, before, question, note, .. } => proposal(s, topic, before, question, note, true),
     }
 }
 
@@ -183,7 +192,28 @@ fn redo(s: &mut Session, op: &Op) {
         }
         Op::AddPlace => {}
         Op::Context { after, .. } => set_context(s, after),
+        Op::Proposal { topic, after, question, note, .. } => proposal(s, topic, after, question, note, false),
     }
+}
+
+fn proposal(s: &mut Session, topic: &str, e: &crate::layer::EditProposal, question: &Option<String>, note: &Option<Note>, hide: bool) {
+    let (t, e, q, n) = (topic.to_string(), e.clone(), question.clone(), note.clone());
+    crate::update(s, |l| {
+        if let Some(x) = l.topic_mut(&t) {
+            x.edits = Some(e);
+        }
+        if let Some(q) = &q
+            && let Some(x) = l.questions.iter_mut().find(|x| &x.id == q)
+        {
+            x.hidden = hide;
+        }
+        if let Some(n) = &n {
+            l.notes.retain(|x| x.id != n.id);
+            if !hide {
+                l.notes.push(n.clone());
+            }
+        }
+    });
 }
 
 fn set_context(s: &mut Session, c: &Option<crate::context::Context>) {

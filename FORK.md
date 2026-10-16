@@ -98,6 +98,26 @@ upstream. Each one accepted upstream removes its lines from the patch.
   `/events` or channel stream connected, a `wait_for_questions` poll in the last minute (its calls
   carry `waiting`, so HTTP and stdio count alike), the background agent running. Stream polls carry
   `poll`, so neither counts as the agent's last tool call.
+- **Proposals instead of direct edits** (`proposals.rs`; the same MCP surface in GridCraft and
+  DeckCraft): `run_command {…, topic, option?}` doesn't change the document: it runs on the
+  topic's draft (the document with the option's earlier commands replayed on a scratch session,
+  privacy guards included), which checks it, and is recorded in the topic's proposal (option "A"
+  by default). `describe_option {topic, option, title, why}`, `discard_proposal {topic,
+  option?}`. Reads mark what a pending proposal touches (`pending: [{topic, option, summary}]` on
+  a paragraph), `read_document {view: "proposal", topic, option?}` reads a draft, `list_topics` /
+  `get_topic` show `proposal: {options: [{option, title, why, changes, summary}], state}` (the
+  agent's "agreed" suggestion is now `agreedProposal`), questions carry `pendingNearby`. Events on
+  `/events` (`agent.events`): `proposal_applied`, `proposal_rejected` (with the comment, which
+  also arrives as a follow-up question in the topic), `proposal_outdated`. The topic card: "The
+  agent proposes N changes", the options, **Apply option X** / **Reject** (optional comment);
+  the option shown is previewed in the document with its changes tracked (inserted, deleted,
+  formatting changed; read only, like a client's copy). Apply replays the commands as one undo
+  step (`join_next_undo`), the person's action, with a decision note "chose X: <title>"; a step
+  that no longer fits (its quote or paragraph is found again nearest to where it was) applies
+  nothing and marks it out of date; applying one re-checks the others. A step's target is kept
+  as `{paragraph, quote, occurrence}` in the agent's view of the draft it ran on, plus the
+  paragraph's text. The person's layer commands while a copy is shown now act on the document
+  underneath, so their undo step never holds the copy.
 - **Voice questions** (`crates/agent-ui/src/voice.rs`, native only; the same as GridCraft's):
   hold ⌥ (Alt) alone, or click **Ask by Voice** on the Agent tab, speak, and click or select the
   passages you mean while speaking; release (or click again) and the question goes on at once. A
