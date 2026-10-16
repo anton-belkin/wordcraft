@@ -69,7 +69,7 @@ fn log(s: &mut Session, actor: Actor, kind: &str, text: String, command: &str, s
 
 /// Where a reader's command applies: the given paragraph/quote, else the selection (a caret: its
 /// paragraph). Positions in the document on screen.
-fn reader_range(s: &Session, v: &Json) -> Result<(Pos, Pos), CmdError> {
+pub(crate) fn reader_range(s: &Session, v: &Json) -> Result<(Pos, Pos), CmdError> {
     if p::u64(v, "paragraph").is_some() || p::str(v, "quote").is_some() {
         let plain = crate::mask::View::new(&s.doc, &Default::default(), &[]);
         let para = p::u64(v, "paragraph").map(|n| n.min(usize::MAX as u64) as usize);
@@ -96,8 +96,10 @@ pub fn ask(s: &mut Session, v: &Json) -> CmdResult {
     if is_agent(v) {
         return Err(bad("questions are the reader's"));
     }
-    if crate::render_state(s).is_some() {
-        return Err(bad("you are looking at a client's copy: switch Show: Template to ask (places live in the template)"));
+    // On the client's copy: the passage traced back to the template (the observer swapped it in).
+    let traced = crate::take_preview_ask();
+    if traced.is_none() && crate::render_state(s).is_some() {
+        return Err(bad("this passage of the client's copy can't be traced to the template: switch Show: Template to ask"));
     }
     let text = text_p(v, "text", 20_000)?;
     crate::ensure(s);
@@ -106,7 +108,10 @@ pub fn ask(s: &mut Session, v: &Json) -> CmdResult {
         Some(_) => Some(topic_p(s, v)?),
     };
     let new_topic = p::bool(v, "newTopic").unwrap_or(false);
-    let (a, b) = reader_range(s, v)?;
+    let (a, b) = match &traced {
+        Some((a, b, _)) => (a.clone(), b.clone()),
+        None => reader_range(s, v)?,
+    };
     let existing = explicit.or_else(|| if new_topic { None } else { topics::touching(s, &a, &b).first().map(|t| t.id.clone()) });
     let (topic, created) = match existing {
         Some(t) => (t, false),
@@ -140,7 +145,13 @@ pub fn ask(s: &mut Session, v: &Json) -> CmdResult {
     let name = status_name(s, &topic);
     log(s, Actor::Human, "question", format!("Asked on {name}: “{}”", text.chars().take(200).collect::<String>()), "agent.ask", id.clone());
     undo::push(s, Op::Ask { question: id.clone() });
-    Ok(json!({"id": id, "topic": topic, "number": topics::number(s, &topic), "newTopic": created}))
+    // Where it went, when asked on the client's copy.
+    let on_template = match traced {
+        Some((_, _, true)) => json!("loop"),
+        Some(_) => json!("paragraph"),
+        None => Json::Null,
+    };
+    Ok(json!({"id": id, "topic": topic, "number": topics::number(s, &topic), "newTopic": created, "onTemplate": on_template}))
 }
 
 fn apply_status(s: &mut Session, topic: &str, new: TopicStatus, proposal: Option<Proposal>, undoable: bool) -> CmdResult {
@@ -340,6 +351,8 @@ fn topics_cmd(s: &mut Session, v: &Json) -> CmdResult {
     gate(v)?;
     doc_check(s, v)?;
     let want = p::str(v, "status").and_then(StatusKind::parse);
+    // Places are read in the template (the client's copy on screen is not the agent's).
+    let swapped = crate::template_in(s);
     let view = crate::view(s);
     let l = crate::layer(s);
     let all = topics::resolve(s);
@@ -348,17 +361,21 @@ fn topics_cmd(s: &mut Session, v: &Json) -> CmdResult {
         .filter(|t| want.is_none_or(|w| l.topic(&t.id).is_some_and(|x| x.status.kind == w)))
         .map(|t| topic_json(s, &view, t, false))
         .collect();
-    masked(&view, v, json!({"signOff": sign_off(s), "topics": list}))
+    let out = json!({"signOff": sign_off(s), "topics": list});
+    crate::template_out(s, swapped);
+    masked(&view, v, out)
 }
 
 fn topic_cmd(s: &mut Session, v: &Json) -> CmdResult {
     gate(v)?;
     doc_check(s, v)?;
     let id = topic_p(s, v)?;
+    let swapped = crate::template_in(s);
     let view = crate::view(s);
     let all = topics::resolve(s);
-    let t = all.iter().find(|t| t.id == id).ok_or_else(|| bad("that topic isn't shown (undone)"))?;
-    let out = topic_json(s, &view, t, true);
+    let out = all.iter().find(|t| t.id == id).map(|t| topic_json(s, &view, t, true));
+    crate::template_out(s, swapped);
+    let out = out.ok_or_else(|| bad("that topic isn't shown (undone)"))?;
     masked(&view, v, out)
 }
 

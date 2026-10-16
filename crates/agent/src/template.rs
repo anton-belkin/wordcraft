@@ -22,6 +22,53 @@ pub struct Filled {
     pub label: String,
 }
 
+/// Where a block of the rendered document came from (one per top-level body block).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Source {
+    /// Its block in the template's body.
+    pub block: usize,
+    /// The loops it was repeated by, outermost first: each `(for tag, endfor tag)` block indices.
+    pub loops: Vec<(usize, usize)>,
+    /// Its iteration of each of those loops.
+    pub iterations: Vec<usize>,
+    /// The placeholders filled in it, in order: `(paragraph path inside the block, start, end in
+    /// the rendered text, length of the placeholder in the template)`.
+    pub edits: Vec<(Vec<u32>, usize, usize, usize)>,
+}
+
+/// Which side of a filled-in value a position inside it goes to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Bias {
+    Start,
+    End,
+}
+
+/// A position of the rendered document in the template: its path and offset, and the loops whose
+/// repetition it is in (empty: exactly one template paragraph). Offsets inside a filled-in value go
+/// to the start or end of its placeholder.
+pub fn to_template<'a>(map: &'a [Source], path: &Path, off: usize, bias: Bias) -> Option<(Path, usize, &'a [(usize, usize)])> {
+    let (first, sub) = path.0.split_first()?;
+    let src = map.get(*first as usize)?;
+    // How much longer the rendered text is than the template's, up to the position.
+    let mut delta: isize = 0;
+    let mut t_off = None;
+    for (_, start, end, tlen) in src.edits.iter().filter(|e| e.0.as_slice() == sub) {
+        if off <= *start {
+            break;
+        }
+        let t_start = (*start as isize - delta).max(0) as usize;
+        if off < *end {
+            t_off = Some(if bias == Bias::Start { t_start } else { t_start + tlen });
+            break;
+        }
+        delta += *end as isize - *start as isize - *tlen as isize;
+    }
+    let t_off = t_off.unwrap_or_else(|| (off as isize - delta).max(0) as usize);
+    let mut out = vec![src.block as u32];
+    out.extend_from_slice(sub);
+    Some((Path(out), t_off, &src.loops))
+}
+
 /// Deepest nesting of blocks followed.
 const MAX_DEPTH: usize = 16;
 /// Most body blocks a render makes (a loop over a long list stops there).
@@ -37,7 +84,8 @@ enum Tag {
 
 fn tag_of(b: &Block) -> Option<Tag> {
     let p = b.as_para()?;
-    let t = p.text.trim();
+    let clean: String = p.text.chars().filter(|c| *c != wordcraft_doc::para::OBJ).collect();
+    let t = clean.trim();
     let inner = t.strip_prefix("{%")?.strip_suffix("%}")?.trim();
     let words: Vec<&str> = inner.split_whitespace().collect();
     match words.as_slice() {
@@ -108,13 +156,18 @@ fn text_of(v: &Json) -> String {
 
 /// The blocks of `blocks` with loops and conditions applied; inline placeholders are filled as the
 /// blocks are copied (each copy with its own loop variables).
-fn expand(
-    blocks: &[Arc<Block>],
-    scope: &Map<String, Json>,
-    depth: usize,
-    out: &mut Blocks,
-    filled: &mut Vec<(usize, Vec<u32>, usize, usize, String)>,
-) {
+/// Where the blocks of the rendered document come from, as they are made.
+#[derive(Default)]
+struct Trace {
+    /// The template index of `blocks[0]`.
+    base: usize,
+    loops: Vec<(usize, usize)>,
+    iterations: Vec<usize>,
+    map: Vec<Source>,
+    filled: Vec<(usize, Vec<u32>, usize, usize, String)>,
+}
+
+fn expand(blocks: &[Arc<Block>], scope: &Map<String, Json>, depth: usize, out: &mut Blocks, tr: &mut Trace) {
     if depth > MAX_DEPTH {
         return;
     }
@@ -127,11 +180,18 @@ fn expand(
                 let end = end.unwrap_or(blocks.len());
                 let body = blocks.get(i + 1..end).unwrap_or(&[]);
                 if let Some(Json::Array(items)) = lookup(scope, &list) {
-                    for item in items.iter().take(1_000) {
+                    let base = tr.base;
+                    tr.loops.push((base + i, base + end));
+                    for (n, item) in items.iter().take(1_000).enumerate() {
                         let mut inner = scope.clone();
                         inner.insert(var.clone(), item.clone());
-                        expand(body, &inner, depth + 1, out, filled);
+                        tr.iterations.push(n);
+                        tr.base = base + i + 1;
+                        expand(body, &inner, depth + 1, out, tr);
+                        tr.iterations.pop();
                     }
+                    tr.base = base;
+                    tr.loops.pop();
                 }
                 i = end + 1;
             }
@@ -145,14 +205,23 @@ fn expand(
                     (false, Some(e)) => (e + 1, end),
                     (false, None) => (end, end),
                 };
-                expand(blocks.get(a..z).unwrap_or(&[]), scope, depth + 1, out, filled);
+                let base = tr.base;
+                tr.base = base + a;
+                expand(blocks.get(a..z).unwrap_or(&[]), scope, depth + 1, out, tr);
+                tr.base = base;
                 i = end + 1;
             }
             // A stray closing tag shows as written.
             _ => {
                 let mut b = (**b).clone();
                 let at = out.len();
-                fill_block(&mut b, scope, &mut vec![], &mut |path, s, e, l| filled.push((at, path, s, e, l)));
+                let mut src = Source { block: tr.base + i, loops: tr.loops.clone(), iterations: tr.iterations.clone(), edits: vec![] };
+                let filled = &mut tr.filled;
+                fill_block(&mut b, scope, &mut vec![], &mut |path, s, e, tlen, l| {
+                    src.edits.push((path.clone(), s, e, tlen));
+                    filled.push((at, path, s, e, l));
+                });
+                tr.map.push(src);
                 out.push(Arc::new(b));
                 i += 1;
             }
@@ -161,7 +230,7 @@ fn expand(
 }
 
 /// Fills the inline placeholders of a block (a paragraph, or every paragraph of a table).
-fn fill_block(b: &mut Block, scope: &Map<String, Json>, sub: &mut Vec<u32>, rec: &mut dyn FnMut(Vec<u32>, usize, usize, String)) {
+fn fill_block(b: &mut Block, scope: &Map<String, Json>, sub: &mut Vec<u32>, rec: &mut dyn FnMut(Vec<u32>, usize, usize, usize, String)) {
     match b {
         Block::Para(p) => {
             if !p.text.contains("{{") {
@@ -179,7 +248,7 @@ fn fill_block(b: &mut Block, scope: &Map<String, Json>, sub: &mut Vec<u32>, rec:
                         let value = text_of(v);
                         let props = p.props_at(open).clone();
                         if p.delete(open, close).is_ok() && p.insert_text(open, &value, &props).is_ok() {
-                            out.push((open, open + value.len(), name));
+                            out.push((open, open + value.len(), close - open, name));
                             search = open + value.len();
                         } else {
                             search = close;
@@ -191,8 +260,8 @@ fn fill_block(b: &mut Block, scope: &Map<String, Json>, sub: &mut Vec<u32>, rec:
             if !out.is_empty() {
                 p.touch();
             }
-            for (s, e, l) in out {
-                rec(sub.clone(), s, e, l);
+            for (s, e, tlen, l) in out {
+                rec(sub.clone(), s, e, tlen, l);
             }
         }
         Block::Table(t) => {
@@ -211,14 +280,21 @@ fn fill_block(b: &mut Block, scope: &Map<String, Json>, sub: &mut Vec<u32>, rec:
 
 /// `template` rendered with `data` (`{"client": …}`), and where values were filled in.
 pub fn render(template: &Document, data: &Json) -> (Document, Vec<Filled>) {
+    let (doc, filled, _) = render_mapped(template, data);
+    (doc, filled)
+}
+
+/// [`render`], with where each rendered body block came from in the template.
+pub fn render_mapped(template: &Document, data: &Json) -> (Document, Vec<Filled>, Vec<Source>) {
     let scope = data.as_object().cloned().unwrap_or_default();
     let mut out = Vec::new();
-    let mut raw = Vec::new();
-    expand(&template.body, &scope, 0, &mut out, &mut raw);
+    let mut tr = Trace::default();
+    expand(&template.body, &scope, 0, &mut out, &mut tr);
     let mut doc = template.clone();
     doc.body = out;
     doc.ensure_nonempty();
-    let filled = raw
+    let filled = tr
+        .filled
         .into_iter()
         .map(|(block, sub, start, end, label)| {
             let mut path = vec![block as u32];
@@ -226,5 +302,5 @@ pub fn render(template: &Document, data: &Json) -> (Document, Vec<Filled>) {
             Filled { path: Path(path), start, end, label }
         })
         .collect();
-    (doc, filled)
+    (doc, filled, tr.map)
 }

@@ -31,6 +31,15 @@ pub struct RPlace {
     pub removed: Option<String>,
     pub reason: String,
     pub added_by: Actor,
+    /// Its other repetitions in a client's copy (a place inside a template loop shows once per item).
+    pub also: Vec<(Pos, Pos)>,
+}
+
+impl RPlace {
+    /// Every range it covers on screen: itself, then its repetitions.
+    pub fn ranges(&self) -> impl Iterator<Item = (&Pos, &Pos)> {
+        self.from.iter().zip(self.to.iter()).chain(self.also.iter().map(|(a, b)| (a, b)))
+    }
 }
 
 /// A visible topic with its number and places.
@@ -101,7 +110,14 @@ fn compute(doc: &wordcraft_doc::Document, l: &Layer) -> Vec<RTopic> {
             .live_places()
             .map(|p| {
                 let r = range_of(doc, &m, &paras, l, p);
+                let also = m
+                    .get(&crate::layer::bookmark_name(&p.id))
+                    .map(|occ| {
+                        occ.iter().filter_map(|o| Some((o.from()?, o.to()?))).filter(|(a, b)| a < b && r.as_ref().is_none_or(|x| x.0 != *a)).collect()
+                    })
+                    .unwrap_or_default();
                 RPlace {
+                    also,
                     id: p.id.clone(),
                     label: String::new(),
                     from: r.as_ref().map(|x| x.0.clone()),
@@ -173,16 +189,7 @@ pub fn find_place(s: &Session, key: &str) -> Option<String> {
 /// The visible topics whose places touch `[a, b]` (a caret counts when it is inside or at an edge).
 pub fn touching(s: &Session, a: &Pos, b: &Pos) -> Vec<RTopic> {
     let (a, b) = if a <= b { (a, b) } else { (b, a) };
-    resolve(s)
-        .iter()
-        .filter(|t| {
-            t.places.iter().any(|p| match (&p.from, &p.to) {
-                (Some(x), Some(y)) => x <= b && a <= y,
-                _ => false,
-            })
-        })
-        .cloned()
-        .collect()
+    resolve(s).iter().filter(|t| t.places.iter().any(|p| p.ranges().any(|(x, y)| x <= b && a <= y))).cloned().collect()
 }
 
 // ---------------------------------------------------------------- keeping bookmarks in step

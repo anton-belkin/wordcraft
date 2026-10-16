@@ -51,7 +51,7 @@ pub mod undo;
 use std::sync::Arc;
 
 use serde_json::Value as Json;
-use wordcraft_doc::Document;
+use wordcraft_doc::{Document, Pos, StoryRef};
 use wordcraft_engine::ext::Observer;
 use wordcraft_engine::{CmdResult, Selection, Session};
 
@@ -162,6 +162,8 @@ pub struct Render {
     pub template: Document,
     /// Where values were filled in, in the rendered document.
     pub filled: Vec<template::Filled>,
+    /// Where each block of the rendered document came from in the template.
+    pub map: Vec<template::Source>,
 }
 
 /// The layer's state in a session (`Session::ext`).
@@ -261,14 +263,48 @@ pub fn set_render(s: &mut Session, client: Option<&str>) -> Result<(), String> {
         show_doc(s, template);
         return Ok(());
     };
-    let (mut doc, filled) = template::render(&template, &serde_json::json!({"client": data}));
+    let (mut doc, filled, map) = template::render_mapped(&template, &serde_json::json!({"client": data}));
     // The preview is read only: changes go to the template (the agent's, through the layer).
     doc.settings.protection = Some("readOnly".into());
     show_doc(s, doc);
     if let Some(st) = s.ext.get_mut::<State>() {
-        st.render = Some(Render { client: id.to_string(), template, filled });
+        st.render = Some(Render { client: id.to_string(), template, filled, map });
     }
     Ok(())
+}
+
+/// A passage of the client's copy on screen, in the template it was rendered from: exact when it
+/// comes from template paragraphs shown once; the body of the loop when it is inside a repetition
+/// (which one of them is not something a place in the template can say). `true` in the last field
+/// for the loop's body.
+pub fn template_range(s: &Session, a: &Pos, b: &Pos) -> Option<(Pos, Pos, bool)> {
+    let r = render_state(s)?;
+    let t = &r.template;
+    let (pa, oa, la) = template::to_template(&r.map, &a.path, a.off, template::Bias::Start)?;
+    let (pb, ob, lb) = template::to_template(&r.map, &b.path, b.off, template::Bias::End)?;
+    // The body of a loop: from the start of its first paragraph to the end of its last.
+    let body = |l: &(usize, usize)| -> Option<(Pos, Pos)> {
+        let inside: Vec<_> =
+            t.para_paths(StoryRef::Body).into_iter().filter(|p| p.0.first().is_some_and(|i| (l.0 + 1..l.1).contains(&(*i as usize)))).collect();
+        let (first, last) = (inside.first()?.clone(), inside.last()?.clone());
+        let len = anchor::para_text(t, &last).map_or(0, str::len);
+        Some((Pos::new(StoryRef::Body, first, 0), Pos::new(StoryRef::Body, last, len)))
+    };
+    let mut ta = Pos::new(StoryRef::Body, pa, oa);
+    let mut tb = Pos::new(StoryRef::Body, pb, ob);
+    let common = la.iter().zip(lb).take_while(|(x, y)| x == y).count();
+    if let Some(l) = common.checked_sub(1).and_then(|k| la.get(k)) {
+        (ta, tb) = body(l)?;
+    } else {
+        if let Some(l) = la.first() {
+            ta = body(l)?.0;
+        }
+        if let Some(l) = lb.first() {
+            tb = body(l)?.1;
+        }
+    }
+    let (ta, tb) = (t.clamp(&ta), t.clamp(&tb));
+    (ta <= tb).then_some((ta, tb, !la.is_empty() || !lb.is_empty()))
 }
 
 /// Swaps the template in for a command that must act on it (the agent's edits, Save, Undo) and
@@ -301,6 +337,10 @@ thread_local! {
     static SWAPPED: std::cell::RefCell<Vec<Option<String>>> = const { std::cell::RefCell::new(Vec::new()) };
     /// The places before each running command (nested commands stack up).
     static PLACES_BEFORE: std::cell::RefCell<Vec<Option<topics::Before>>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// A question asked on the client's copy: the passage in the template (see [`template_range`]).
+    static PREVIEW_ASK: std::cell::RefCell<Option<(Pos, Pos, bool)>> = const { std::cell::RefCell::new(None) };
+    /// The reader's selection in the client's copy, to put back after a command ran on the template.
+    static READER_SEL: std::cell::RefCell<Vec<Option<(Pos, Pos)>>> = const { std::cell::RefCell::new(Vec::new()) };
     /// The selection a Copy widened over places' bookmarks, to put back after it.
     static COPY_SEL: std::cell::RefCell<Vec<Option<Selection>>> = const { std::cell::RefCell::new(Vec::new()) };
 }
@@ -327,7 +367,21 @@ impl Observer for Keeper {
             }
         }
         ensure(s);
-        let swapped = if on_template(id) && !commands::in_agent_exec() { template_in(s) } else { None };
+        // A question asked on the client's copy goes on the template paragraph it was rendered from.
+        let mut asked = None;
+        if id == "agent.ask" && !commands::is_agent(params) && render_state(s).is_some() && !commands::in_agent_exec() {
+            asked = topic_cmds::reader_range(s, params).ok().and_then(|(a, b)| template_range(s, &a, &b));
+        }
+        let reader_sel = asked.is_some().then(|| {
+            let (a, b) = s.sel.ordered();
+            (text_offset(&s.doc, &a), text_offset(&s.doc, &b))
+        });
+        READER_SEL.with(|w| w.borrow_mut().push(reader_sel));
+        let swapped = if (on_template(id) || asked.is_some()) && !commands::in_agent_exec() { template_in(s) } else { None };
+        if let Some((a, b, _)) = &asked {
+            s.sel = Selection { anchor: a.clone(), focus: b.clone() };
+        }
+        PREVIEW_ASK.with(|w| *w.borrow_mut() = asked);
         SWAPPED.with(|w| w.borrow_mut().push(swapped));
         let mutates = s.registry.get(id).is_some_and(|c| c.mutates) || is_history(id);
         let places = (mutates && render_state(s).is_none()).then(|| topics::before(s));
@@ -367,14 +421,57 @@ impl Observer for Keeper {
             refresh_anchors(s);
             commands::log_change(s, id, params);
         }
+        PREVIEW_ASK.with(|w| w.borrow_mut().take());
         if swapped.is_some() {
             template_out(s, swapped);
+        }
+        if let Some((a, b)) = READER_SEL.with(|w| w.borrow_mut().pop()).flatten() {
+            // The re-rendered copy has the new place's markers: the same text stays selected.
+            let a = s.doc.clamp(&from_text_offset(&s.doc, &a, true));
+            let b = s.doc.clamp(&from_text_offset(&s.doc, &b, false));
+            s.sel = Selection { anchor: a, focus: b };
         }
         // An agent's refused call is the agent's to read, not the reader's status line.
         if result.is_err() && id.starts_with("agent.") && params.get("actor").and_then(Json::as_str) == Some("agent") {
             s.status.clear();
         }
     }
+}
+
+/// A position with its offset counted in the paragraph's text without inline markers.
+fn text_offset(doc: &Document, p: &Pos) -> Pos {
+    let text = anchor::para_text(doc, &p.path).unwrap_or("");
+    let objs = text.get(..p.off.min(text.len())).map_or(0, |t| t.matches(wordcraft_doc::para::OBJ).count());
+    Pos { off: p.off.saturating_sub(objs * wordcraft_doc::para::OBJ.len_utf8()), ..p.clone() }
+}
+
+/// Back from [`text_offset`]: past the markers there (`after`, for a start) or before them.
+fn from_text_offset(doc: &Document, p: &Pos, after: bool) -> Pos {
+    let text = anchor::para_text(doc, &p.path).unwrap_or("");
+    let mut plain = 0usize;
+    let mut off = text.len();
+    for (i, c) in text.char_indices() {
+        if c == wordcraft_doc::para::OBJ {
+            continue;
+        }
+        if plain == p.off {
+            off = i;
+            break;
+        }
+        plain += c.len_utf8();
+    }
+    if !after {
+        // Before the markers just ahead of the text that follows.
+        while off > 0 && text.get(..off).is_some_and(|t| t.ends_with(wordcraft_doc::para::OBJ)) {
+            off -= wordcraft_doc::para::OBJ.len_utf8();
+        }
+    }
+    Pos { off, ..p.clone() }
+}
+
+/// The passage of a question being asked on the client's copy, in the template (once).
+pub(crate) fn take_preview_ask() -> Option<(Pos, Pos, bool)> {
+    PREVIEW_ASK.with(|w| w.borrow_mut().take())
 }
 
 /// Finds every anchor again after an edit.

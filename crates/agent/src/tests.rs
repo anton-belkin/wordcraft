@@ -667,3 +667,53 @@ fn version_1_files_become_topics() {
     let t = agent(&mut s, "agent.topics", json!({})).unwrap();
     assert_eq!(t["topics"][0]["places"][0]["quote"], "fixed");
 }
+
+#[test]
+fn a_question_on_the_clients_copy_goes_on_the_template() {
+    crate::install();
+    let mut s = Session::new(Document::new());
+    s.author = "Reviewer".into();
+    s.run("agent.openDemo", &json!({})).unwrap();
+    s.run("agent.render", &json!({"client": "CL-2Q8D4R7T"})).unwrap();
+    // A passage of one template paragraph, after a filled-in value: exactly that text.
+    select(&mut s, "invoiced in advance and payable within 30 days");
+    let r = s.run("agent.ask", &json!({"text": "Why 30 days?"})).unwrap();
+    assert_eq!(r["onTemplate"], "paragraph");
+    assert!(body(&s).contains("Brightwater Shipping Ltd"), "the client's copy stays on screen");
+    assert_eq!(s.selected_text(), "invoiced in advance and payable within 30 days", "the reader's selection stays");
+    // A filled-in value: its placeholder, which is all the agent sees.
+    select(&mut s, "Brightwater Shipping Ltd: the review");
+    assert_eq!(s.run("agent.ask", &json!({"text": "Their full name?"})).unwrap()["onTemplate"], "paragraph");
+    // Inside a loop's repetition (the third owner): the loop's body, and the box says so.
+    select(&mut s, "Tamsin Rook");
+    assert_eq!(s.run("agent.ask", &json!({"text": "Checked?"})).unwrap()["onTemplate"], "loop");
+    let t = topics_of(&mut s);
+    let quotes: Vec<&str> = t["topics"].as_array().unwrap().iter().map(|t| t["places"][0]["quote"].as_str().unwrap()).collect();
+    assert_eq!(
+        quotes,
+        [
+            "{{client.name}}: the review",
+            "{{ubo.name}} ({{ubo.nationality}}), holding {{ubo.share}} of the shares.",
+            "invoiced in advance and payable within 30 days"
+        ],
+        "in document order"
+    );
+    let read = t.to_string();
+    for name in ["Brightwater", "Tamsin", "GBP"] {
+        assert!(!read.contains(name), "{name}");
+    }
+    // The bookmarks are in the template; the client's copy shows them (once per owner in the loop).
+    s.run("agent.render", &json!({"client": null})).unwrap();
+    assert_eq!(crate::places::scan(&s.doc).len(), 3);
+    s.run("agent.render", &json!({"client": "CL-2Q8D4R7T"})).unwrap();
+    let shown = crate::topics::resolve(&s);
+    assert!(shown.iter().all(|t| t.places.iter().all(|p| p.from.is_some())));
+    assert_eq!(shown.iter().map(|t| t.places[0].ranges().count()).collect::<Vec<_>>(), [1, 3, 1], "the loop's place on every owner");
+    select(&mut s, "Tamsin Rook");
+    let (a, b) = s.sel.ordered();
+    assert_eq!(crate::topics::touching(&s, &a, &b).len(), 1, "a repetition finds its topic");
+    // Undo in the client's copy takes the last question back.
+    s.run("edit.undo", &json!({})).unwrap();
+    assert_eq!(topics_of(&mut s)["topics"].as_array().unwrap().len(), 2);
+    assert!(body(&s).contains("Brightwater Shipping Ltd"));
+}

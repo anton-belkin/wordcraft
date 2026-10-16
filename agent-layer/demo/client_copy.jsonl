@@ -1,0 +1,14 @@
+{"start": "demo", "width": 1440, "height": 900}
+{"cmd": "agent.render", "params": {"client": "CL-2Q8D4R7T"}}
+{"cmd": "select.text", "params": {"text": "payable within 30 days"}}
+{"pane": "ask:Why 30 days for this client?"}
+{"steps": 6}
+{"cmd": "select.text", "params": {"text": "Tamsin Rook"}}
+{"pane": "ask:Was she checked against the sanctions lists?"}
+{"steps": 6}
+{"shot": "SHOTS/t6-client-copy-ask.png"}
+{"cmd": "agent.render", "params": {"client": null}}
+{"cmd": "caret.docStart", "params": {}}
+{"pane": "overview"}
+{"steps": 6}
+{"shot": "SHOTS/t7-template-places.png"}

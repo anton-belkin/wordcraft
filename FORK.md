@@ -77,6 +77,13 @@ upstream. Each one accepted upstream removes its lines from the patch.
   (`{{client.name}}`, `{% for ubo in client.ubos %}…{% endfor %}`, `{% if client.vip %}…`), read only;
   the template is kept underneath. The agent reads and edits the template (its `run_command` is
   applied to the template and the preview re-renders at once); Save and Undo act on the template.
+  The reader asks on the client's copy without switching: the renderer keeps a source map (each
+  rendered block's template block, loops and iteration, and where values were filled in), and the
+  question's place goes on the template text it came from. That is exact for a passage of template
+  paragraphs shown once, and a selection inside a filled-in value covers its placeholder. Inside a
+  loop's repetition the place covers the loop's body, the box says "Asked on the template's loop
+  block", and the copy shows the marker on every repetition. The agent still gets only the
+  template and placeholders.
   The CRM is three invented clients built in code (`crates/agent/src/crm.rs`).
 - **The MCP server runs inside the app** (`http://127.0.0.1:7982/mcp`, Streamable HTTP, JSON
   responses; GridCraft uses 7980) and reaches the document through the app's own loopback control

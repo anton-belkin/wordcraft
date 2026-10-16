@@ -61,8 +61,9 @@ pub(crate) fn server_url() -> Option<&'static str> {
 
 static REQUEST: Mutex<Option<(bool, String)>> = Mutex::new(None);
 
-/// Opens (or closes) the Agent pane on a tab (`selection`, `overview`, `history`) from the next
-/// frame (for scripts and snapshots).
+/// Opens (or closes) the Agent pane on a tab (`selection`, `overview`, `history`; `selection:3`
+/// with topic 3 open; `ask:<question>` asks on the selection) from the next frame (for scripts and
+/// snapshots).
 pub fn request_pane(open: bool, tab: &str) {
     if let Ok(mut r) = REQUEST.lock() {
         *r = Some((open, tab.to_string()));
@@ -124,6 +125,8 @@ pub(crate) struct AgentUi {
     pub open_note: Option<String>,
     /// The next question starts a topic of its own.
     pub new_topic: bool,
+    /// Where the last question asked on a client's copy went in the template.
+    pub asked_where: Option<String>,
     /// Overview filter.
     pub filter: Option<String>,
     /// Status text being edited, per topic.
@@ -327,11 +330,17 @@ impl AgentUi {
                     }
                 }
                 Act::Status(s) => app.status(s),
-                Act::Run(id, params) => {
-                    if let Err(e) = app.run(id, params) {
-                        app.status(e);
+                Act::Run(id, params) => match app.run(id, params) {
+                    Ok(r) if id == "agent.ask" => {
+                        self.asked_where = match r["onTemplate"].as_str() {
+                            Some("loop") => Some("Asked on the template's loop block: the question covers every repetition of it.".into()),
+                            Some(_) => Some("Asked on the template paragraph this copy was rendered from.".into()),
+                            None => None,
+                        };
                     }
-                }
+                    Ok(_) => {}
+                    Err(e) => app.status(e),
+                },
                 Act::GoTo(sp) => go_to(app, &sp),
                 Act::AskAbout(sp) => {
                     self.open = true;
@@ -401,8 +410,11 @@ impl UiExtension for AgentUi {
         if let Some((open, tab)) = REQUEST.lock().ok().and_then(|mut r| r.take()) {
             self.open = open;
             self.tab = Tab::parse(tab.split(':').next().unwrap_or(""));
-            // `selection:3`: topic 3 open.
-            if let Some(n) = tab.split_once(':').map(|(_, n)| n) {
+            // `ask:<question>`: asked on the selection, as the box's Ask button does.
+            if let Some(q) = tab.strip_prefix("ask:") {
+                self.acts.push(Act::Run("agent.ask", serde_json::json!({"text": q})));
+            } else if let Some(n) = tab.split_once(':').map(|(_, n)| n) {
+                // `selection:3`: topic 3 open.
                 self.open_topic = wordcraft_agent::topics::find(&app.session, n);
             }
         }

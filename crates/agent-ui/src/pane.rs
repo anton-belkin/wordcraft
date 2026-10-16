@@ -244,9 +244,10 @@ fn topic_card(st: &mut AgentUi, app: &WordApp, ui: &mut Ui, l: &Layer, rt: &RTop
                 ui.label(RichText::new(format!("    {}", pl.reason)).color(t.text_dim).small());
             }
         }
-        let sel_in = !app.session.sel.is_collapsed() && {
+        // (Places are marked on the template, not on a client's copy.)
+        let sel_in = !app.session.sel.is_collapsed() && wordcraft_agent::render_state(&app.session).is_none() && {
             let (a, b) = app.session.sel.ordered();
-            !rt.places.iter().any(|pl| pl.from.as_ref().is_some_and(|f| *f <= b) && pl.to.as_ref().is_some_and(|x| a <= *x))
+            !rt.places.iter().any(|pl| pl.ranges().any(|(f, x)| *f <= b && a <= *x))
         };
         if sel_in && ui.small_button("Add the selection as a place").clicked() {
             acts.push(Act::Run("agent.addPlace", json!({"topic": topic.id})));
@@ -378,7 +379,7 @@ fn ask_box(st: &mut AgentUi, app: &mut WordApp, ui: &mut Ui, t: &Tokens, p: &Pal
     }
     let send_key = r.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.command);
     ui.horizontal(|ui| {
-        let can = sp.is_some() && !st.draft.trim().is_empty() && !preview;
+        let can = sp.is_some() && !st.draft.trim().is_empty();
         let b = egui::Button::new(RichText::new("Ask").strong().color(Color32::WHITE)).fill(p.agent);
         if (ui.add_enabled(can, b).clicked() || (send_key && can))
             && let Some(sp) = &sp
@@ -398,8 +399,13 @@ fn ask_box(st: &mut AgentUi, app: &mut WordApp, ui: &mut Ui, t: &Tokens, p: &Pal
         }
         ui.label(RichText::new(if cfg!(target_os = "macos") { "Cmd+Enter" } else { "Ctrl+Enter" }).color(t.text_disabled).small());
     });
-    if preview {
-        ui.label(RichText::new("You are looking at a client's copy: switch Show: Template (Agent tab) to ask.").color(t.text_dim).small());
+    if let Some(w) = &st.asked_where {
+        ui.label(RichText::new(w).color(t.text_dim).small());
+    } else if preview {
+        ui.label(RichText::new("You are reading a client's copy: questions go on the template it was rendered from.").color(t.text_dim).small());
+    }
+    if !preview || !st.draft.is_empty() {
+        st.asked_where = None;
     }
     st.acts.extend(acts);
 }

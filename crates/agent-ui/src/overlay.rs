@@ -113,35 +113,37 @@ pub(crate) fn paint(st: &mut AgentUi, app: &WordApp, ui: &Ui, painter: &Painter,
         any_working |= working;
         let open = st.open_topic.as_deref() == Some(topic.id.as_str());
         for pl in &topic.places {
-            let (Some(a), Some(b)) = (&pl.from, &pl.to) else { continue };
-            let rects = if pl.removed.is_some() || a >= b { g.caret_rect(app, a).into_iter().collect() } else { g.range_rects(app, a, b) };
-            if open {
-                for (_, r) in rects.iter().filter(|(_, r)| visible(r)) {
-                    painter.rect_stroke(r.expand(1.0), CornerRadius::same(2), Stroke::new(1.0, color), egui::StrokeKind::Outside);
+            // Its repetitions too, in a client's copy (a place inside a template loop).
+            for (k, (a, b)) in pl.ranges().enumerate() {
+                let rects = if pl.removed.is_some() || a >= b { g.caret_rect(app, a).into_iter().collect() } else { g.range_rects(app, a, b) };
+                if open {
+                    for (_, r) in rects.iter().filter(|(_, r)| visible(r)) {
+                        painter.rect_stroke(r.expand(1.0), CornerRadius::same(2), Stroke::new(1.0, color), egui::StrokeKind::Outside);
+                    }
                 }
-            }
-            let Some((page, first)) = rects.first().copied() else { continue };
-            let Some(pr) = g.pages().get(page).copied() else { continue };
-            // In the right margin, stacked when several share a line.
-            let y = first.center().y.max(first.top() + 7.0);
-            let mut x = pr.right() - 22.0;
-            while slots.iter().any(|(pg, sx, sy)| *pg == page && (sx - x).abs() < 16.0 && (sy - y).abs() < 15.0) {
-                x -= 18.0;
-            }
-            slots.push((page, x, y));
-            if !g.clip.contains(pos2(x, y)) {
-                continue;
-            }
-            let rect = marker(painter, pos2(x, y), &pl.label, color, working, unread, time, &t);
-            if pl.removed.is_some() {
-                painter.line_segment([rect.left_center(), rect.right_center()], Stroke::new(1.2, Color32::WHITE));
-            }
-            let resp = ui.interact(rect.expand(2.0), ui.id().with(("agent_marker", pl.id.as_str())), Sense::click());
-            let tip = format!("Topic {}{}", topic.number, if pl.removed.is_some() { " · the text here was removed" } else { "" });
-            let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tip);
-            if resp.clicked() {
-                st.acts.push(Act::GoToRange(a.clone(), b.clone()));
-                st.acts.push(Act::Open(Tab::Selection, Some(topic.id.clone())));
+                let Some((page, first)) = rects.first().copied() else { continue };
+                let Some(pr) = g.pages().get(page).copied() else { continue };
+                // In the right margin, stacked when several share a line.
+                let y = first.center().y.max(first.top() + 7.0);
+                let mut x = pr.right() - 22.0;
+                while slots.iter().any(|(pg, sx, sy)| *pg == page && (sx - x).abs() < 16.0 && (sy - y).abs() < 15.0) {
+                    x -= 18.0;
+                }
+                slots.push((page, x, y));
+                if !g.clip.contains(pos2(x, y)) {
+                    continue;
+                }
+                let rect = marker(painter, pos2(x, y), &pl.label, color, working, unread, time, &t);
+                if pl.removed.is_some() {
+                    painter.line_segment([rect.left_center(), rect.right_center()], Stroke::new(1.2, Color32::WHITE));
+                }
+                let resp = ui.interact(rect.expand(2.0), ui.id().with(("agent_marker", pl.id.as_str(), k)), Sense::click());
+                let tip = format!("Topic {}{}", topic.number, if pl.removed.is_some() { " · the text here was removed" } else { "" });
+                let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tip);
+                if resp.clicked() {
+                    st.acts.push(Act::GoToRange(a.clone(), b.clone()));
+                    st.acts.push(Act::Open(Tab::Selection, Some(topic.id.clone())));
+                }
             }
         }
     }
