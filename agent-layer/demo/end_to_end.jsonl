@@ -1,0 +1,35 @@
+{"start": "demo", "width": 1440, "height": 900}
+{"serve": 7982}
+{"exec": "curl -s http://127.0.0.1:7982/health"}
+{"cmd": "agent.private", "params": {"paragraph": 2, "quote": "KYC-2026-0412", "label": "client.kyc_ref"}}
+{"cmd": "select.text", "params": {"text": "payable within 30 days"}}
+{"cmd": "agent.ask", "params": {"text": "Is 30 days standard for this kind of engagement, or should we ask for less?"}}
+{"exec": "curl -sN --max-time 3 http://127.0.0.1:7982/events"}
+{"pane": "questions"}
+{"shot": "SHOTS/1-question-waiting.png"}
+{"exec": "curl -s -X POST http://127.0.0.1:7982/mcp -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\"}}' | head -c 300; echo"}
+{"exec": "curl -s -X POST http://127.0.0.1:7982/mcp -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"claim_question\",\"arguments\":{\"id\":\"q3\"}}}'; echo"}
+{"shot": "SHOTS/2-agent-working.png"}
+{"exec": "curl -s -X POST http://127.0.0.1:7982/mcp -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"read_document\",\"arguments\":{\"from\":0,\"count\":4}}}'; echo"}
+{"exec": "curl -s -X POST http://127.0.0.1:7982/mcp -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"answer_question\",\"arguments\":{\"id\":\"q3\",\"text\":\"Yes: 30 days is the usual term for advisory engagements invoiced in advance, and it matches the late-payment rules most clients apply. Shorter terms (10–14 days) are common only for one-off work.\",\"links\":[{\"label\":\"Fees clause\",\"href\":\"para:13\"},{\"label\":\"EU Late Payment Directive 2011/7/EU\",\"href\":\"https://eur-lex.europa.eu/eli/dir/2011/7/oj\",\"summary\":\"Business-to-business payment terms: 60 days at most unless agreed otherwise; 30 days is the default when no term is set.\"}]}}}'; echo"}
+{"exec": "curl -s -X POST http://127.0.0.1:7982/mcp -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/call\",\"params\":{\"name\":\"add_note\",\"arguments\":{\"paragraph\":20,\"quote\":\"three months\",\"kind\":\"faq\",\"title\":\"Why three months notice?\",\"text\":\"Three months covers one quarterly filing cycle, so a file is never left half done when the engagement ends.\",\"links\":[{\"label\":\"Firm policy on notice periods\",\"href\":\"https://example.org/policy/notice\",\"summary\":\"Notice equals one reporting cycle for recurring compliance work.\"}]}}}'; echo"}
+{"exec": "curl -s -X POST http://127.0.0.1:7982/mcp -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"tools/call\",\"params\":{\"name\":\"add_note\",\"arguments\":{\"paragraph\":6,\"quote\":\"We do not audit the financial statements\",\"kind\":\"explanation\",\"title\":\"Not an audit\",\"text\":\"Stated explicitly so the letter cannot be read as an assurance engagement.\",\"links\":[{\"label\":\"ISRS 4400 (agreed-upon procedures)\",\"href\":\"https://www.iaasb.org/\",\"summary\":\"Procedures without assurance must say so.\"}]}}}'; echo"}
+{"exec": "curl -s -X POST http://127.0.0.1:7982/mcp -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":{\"name\":\"run_command\",\"arguments\":{\"command\":\"format.bold\",\"at\":{\"paragraph\":20,\"quote\":\"three months\"},\"reason\":\"make the notice period stand out for the signer\",\"source\":\"q3 review\"}}}'; echo"}
+{"exec": "curl -s -X POST http://127.0.0.1:7982/mcp -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"tools/call\",\"params\":{\"name\":\"run_command\",\"arguments\":{\"command\":\"text.insert\",\"params\":{\"text\":\"Hacked\"},\"at\":{\"paragraph\":2,\"quote\":\"{{client.kyc_ref}}\"},\"reason\":\"try to write into client data\"}}}'; echo"}
+{"shot": "SHOTS/3-answer-ready.png"}
+{"cmd": "select.text", "params": {"text": "three months"}}
+{"pane": "notes"}
+{"shot": "SHOTS/4-notes.png"}
+{"pane": "history"}
+{"shot": "SHOTS/5-history.png"}
+{"cmd": "agent.render", "params": {"client": "CL-7F3K9M2Q"}}
+{"pane": "client"}
+{"shot": "SHOTS/6-rendered-client-A.png"}
+{"exec": "curl -s -X POST http://127.0.0.1:7982/mcp -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"tools/call\",\"params\":{\"name\":\"read_document\",\"arguments\":{\"from\":2,\"count\":2}}}'; echo"}
+{"cmd": "agent.render", "params": {"client": "CL-2Q8D4R7T"}}
+{"shot": "SHOTS/7-rendered-client-B.png"}
+{"cmd": "agent.render", "params": {"client": null}}
+{"cmd": "file.saveAs", "params": {"path": "SHOTS/engagement-letter.docx"}}
+{"cmd": "file.open", "params": {"path": "SHOTS/engagement-letter.docx"}}
+{"pane": "questions"}
+{"shot": "SHOTS/8-after-reopen.png"}

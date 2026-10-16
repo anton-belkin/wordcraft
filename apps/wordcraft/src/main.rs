@@ -9,6 +9,7 @@
 #![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+mod agent; // fork:agent
 mod animations;
 #[cfg(target_os = "macos")]
 mod apple_events;
@@ -324,6 +325,7 @@ fn main() -> eframe::Result {
     let mut files = Vec::new();
     let mut sample = false;
     let (args, other_files) = text_args();
+    let (args, agent_opts) = agent::take_args(args); // fork:agent
     let mut bad_control: Option<Option<String>> = None;
     let mut args = args.into_iter().peekable();
     while let Some(a) = args.next() {
@@ -355,6 +357,8 @@ fn main() -> eframe::Result {
         let _ = std::io::Write::write_fmt(&mut std::io::stderr(), format_args!("wordcraft: --control needs a port number from 1 to 65535{got}\n"));
         std::process::exit(2);
     }
+    let control_port = agent::control_port(agent_opts, control_port); // fork:agent
+    agent::install(agent_opts); // fork:agent
     // The log file lives in the settings directory, next to the preferences; opened after the
     // arguments, so `--version` leaves no file behind. Records logged until now are written to it
     // first. Runs without preferences (agents' test runs) log to standard error only, so they
@@ -418,6 +422,7 @@ fn main() -> eframe::Result {
             // separator (#838).
             let region = region::system();
             let doc = if sample { wordcraft_engine::sample::sample_document() } else { wordcraft_engine::blank_document(&region) };
+            let doc = agent::demo_document(agent_opts).unwrap_or(doc); // fork:agent
             let (file_dialog, dialogs) = file_dialogs::hook(&cc.egui_ctx);
             let mut session = Session::new(doc);
             session.system_region = region;
@@ -453,6 +458,7 @@ fn main() -> eframe::Result {
                 app = app.with_control(rx);
                 key_file = file;
             }
+            agent::start(agent_opts, control_port); // fork:agent
             // Nothing to open (no files, no sample, no control channel driving the editor): start
             // on File › Home, as Word does (#766), unless the Start screen option is off. Files
             // macOS hands over later open on top of it and close it (`apple_events`).
