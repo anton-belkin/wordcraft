@@ -566,6 +566,14 @@ pub(crate) fn lamp(st: &mut AgentUi, app: &WordApp, c: &Context, acts: &mut Vec<
             }
         }
     };
+    // The agent having just worked here is being here, for the usual listener window (no
+    // heartbeat needed): after Working… the lamp is green, not grey.
+    let recent = wordcraft_agent::last_agent_call_ms();
+    let (lamp, tip) = if lamp != Lamp::Ready && !c.background() && recent > 0 && now.saturating_sub(recent) < presence::LISTENER_TTL_MS {
+        (Lamp::Ready, "Claude worked on this document a moment ago.".to_string())
+    } else {
+        (lamp, tip)
+    };
     if lamp == Lamp::Ready {
         st.waiting_since = 0;
     }

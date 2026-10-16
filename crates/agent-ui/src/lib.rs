@@ -38,13 +38,19 @@ static SERVER: OnceLock<String> = OnceLock::new();
 /// made: its command registry is built then).
 pub fn install() {
     wordcraft_agent::install();
-    // Once: a second registration would run every hook twice.
+    // The commands once per process; the UI once per thread (the UI's extensions are the
+    // thread's): a second registration would run every hook twice.
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         #[cfg(not(target_arch = "wasm32"))]
         wordcraft_engine::ext::register_commands(voice::specs());
-        wordcraft_ui_egui::ext::register(Box::new(AgentUi::default()));
     });
+    thread_local! {
+        static UI: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    if !UI.with(|u| u.replace(true)) {
+        wordcraft_ui_egui::ext::register(Box::new(AgentUi::default()));
+    }
 }
 
 /// Tells the pane where the agent server listens (shown under Connect).
@@ -694,7 +700,11 @@ mod tests {
         let (topics, _) = crate::ribbon::working(&app, &c).expect("claimed: working");
         assert_eq!(topics.len(), 1);
         app.session.run("agent.answer", &serde_json::json!({"id": q, "actor": "agent", "text": "Because."})).unwrap();
-        assert!(crate::ribbon::working(&app, &c).is_none(), "answered: back to Ready");
+        assert!(crate::ribbon::working(&app, &c).is_none(), "answered: no longer working");
+        // ...and Ready (green), not Not ready: the agent was just here.
+        let mut st = super::AgentUi::default();
+        let (lamp, _) = crate::ribbon::lamp(&mut st, &app, &c, &mut vec![]);
+        assert_eq!(lamp, crate::ribbon::Lamp::Ready);
         // Building a proposal is working too, for a few seconds after each step.
         let t = topics[0].clone();
         app.session
