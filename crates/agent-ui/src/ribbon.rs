@@ -376,6 +376,14 @@ fn mic(p: &egui::Painter, r: Rect, color: Color32, on: bool) {
 
 static MENU_REQUEST: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
+/// Where the Context group's mode button was last drawn (UI tests click it).
+static MODE_BUTTON: std::sync::Mutex<Option<Rect>> = std::sync::Mutex::new(None);
+
+#[doc(hidden)]
+pub fn mode_button_rect() -> Option<Rect> {
+    MODE_BUTTON.lock().ok().and_then(|g| *g)
+}
+
 /// Opens one of the Context menus (`context`, `ready`, `more`) on the next frame (for scripts and
 /// snapshots); `none` closes them.
 pub fn request_menu(name: &str) {
@@ -791,6 +799,9 @@ fn context_group(st: &mut AgentUi, ui: &mut Ui, app: &mut WordApp, t: &Tokens, a
     }
     // The mode.
     let m = mode_button(ui, &c, lamp, &format!("What the agent knows: {}. {tip}", c.describe()), t);
+    if let Ok(mut g) = MODE_BUTTON.lock() {
+        *g = Some(m.rect);
+    }
     scripted(ui, "context", &m);
     egui::Popup::menu(&m).show(|ui| {
         ui.set_min_width(330.0);
@@ -835,7 +846,9 @@ fn context_group(st: &mut AgentUi, ui: &mut Ui, app: &mut WordApp, t: &Tokens, a
             }
         }
     });
-    m.context_menu(|ui| more_menu(ui, app, t, acts));
+    // Right-click: the background session and Details. Its own popup id: egui's context menu
+    // otherwise shares the mode menu's id and closes it on a left click.
+    egui::Popup::context_menu(&m).id(m.id.with("agent_context_more")).show(|ui| more_menu(ui, app, t, acts));
 
     // What goes with it.
     ui.vertical(|ui| {

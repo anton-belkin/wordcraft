@@ -18,7 +18,7 @@ mod ribbon;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod voice;
 
-pub use ribbon::request_menu;
+pub use ribbon::{mode_button_rect, request_menu};
 
 use std::sync::{Mutex, OnceLock};
 
