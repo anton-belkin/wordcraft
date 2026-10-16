@@ -116,6 +116,9 @@ upstream. Each one accepted upstream removes its lines from the patch.
   that no longer fits (its quote or paragraph is found again nearest to where it was) applies
   nothing and marks it out of date; applying one re-checks the others. A step's target is kept
   as `{paragraph, quote, occurrence}` in the agent's view of the draft it ran on, plus the
+  paragraph's text. A replacement over a place (an applied proposal, the agent's or the
+  person's: its text selected, new text inserted in its stead) leaves the place spanning the new
+  text, not collapsed beside it (`topics::respan`); a plain delete still leaves a removed place.
   paragraph's text. The person's layer commands while a copy is shown now act on the document
   underneath, so their undo step never holds the copy.
 - **Voice questions** (`crates/agent-ui/src/voice.rs`, native only; the same as GridCraft's):

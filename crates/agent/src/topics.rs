@@ -206,6 +206,10 @@ pub struct Before {
     pub texts: HashMap<String, String>,
     /// Where the selection started (a paste lands there).
     pub paste_from: Option<Pos>,
+    /// The selection, ordered.
+    pub sel: Option<(Pos, Pos)>,
+    /// Place id → where its text was.
+    pub ranges: HashMap<String, (Pos, Pos)>,
 }
 
 /// Records the places before a command.
@@ -216,16 +220,18 @@ pub fn before(s: &Session) -> Before {
     }
     let m = places::scan(&s.doc);
     let mut texts = HashMap::new();
+    let mut ranges = HashMap::new();
     for t in &l.topics {
         for p in &t.places {
             if let Some(o) = m.get(&bookmark_name(&p.id)).and_then(|v| v.iter().find(|o| o.whole() && !o.collapsed()))
                 && let (Some(a), Some(b)) = (o.from(), o.to())
             {
                 texts.insert(p.id.clone(), places::text(&s.doc, &a, &b));
+                ranges.insert(p.id.clone(), (a, b));
             }
         }
     }
-    Before { texts, paste_from: Some(s.sel.ordered().0) }
+    Before { texts, paste_from: Some(s.sel.ordered().0), sel: Some(s.sel.ordered()), ranges }
 }
 
 /// What reconciling changed in the layer.
@@ -233,6 +239,24 @@ pub fn before(s: &Session) -> Before {
 struct Changes {
     places: HashMap<String, (Option<Option<String>>, Option<bool>)>,
     new_places: Vec<(String, Place, (Pos, Pos))>,
+}
+
+/// A replacement over a place (its text selected, new text typed or inserted in its stead): the
+/// place spans the new text, instead of staying behind as a removed place beside it.
+fn respan(s: &mut Session, place: &str, before: &Before, caret: &Pos) -> bool {
+    let (Some((sa, sb)), Some((pa, pb))) = (&before.sel, before.ranges.get(place)) else { return false };
+    // The selection covered (some of) the place, and text went in where it was.
+    if sa == sb || !(sa <= pb && pa <= sb) || caret.path != sa.path || caret <= sa || caret.story != sa.story {
+        return false;
+    }
+    let name = bookmark_name(place);
+    let (a, b) = (crate::text_offset(&s.doc, sa), crate::text_offset(&s.doc, caret));
+    for o in places::scan(&s.doc).get(&name).cloned().unwrap_or_default().iter().rev() {
+        places::remove(&mut s.doc, o);
+    }
+    let x = s.doc.clamp(&crate::from_text_offset(&s.doc, &a, true));
+    let y = s.doc.clamp(&crate::from_text_offset(&s.doc, &b, false));
+    places::insert(&mut s.doc, &name, &x, &y).is_ok()
 }
 
 /// Brings the places' bookmarks and the layer in step after a command. `restore`: the command put
@@ -268,6 +292,10 @@ pub fn reconcile(s: &mut Session, restore: bool, before: &Before) {
                 places::remove(&mut s.doc, &o);
                 let (a, b) = match (&o.start, &o.end) {
                     (Some(st), None) if caret >= *st => (st.clone(), caret.clone()),
+                    // Its start went with a replacement: from where the new text begins.
+                    (None, Some(e)) if before.sel.as_ref().is_some_and(|(sa, _)| sa <= e && sa.path == e.path) => {
+                        (before.sel.as_ref().map_or_else(|| caret.clone(), |(sa, _)| sa.clone()), e.clone())
+                    }
                     (None, Some(e)) if caret <= *e => (caret.clone(), e.clone()),
                     (Some(x), None) | (None, Some(x)) => (x.clone(), x.clone()),
                     _ => continue,
@@ -299,6 +327,11 @@ pub fn reconcile(s: &mut Session, restore: bool, before: &Before) {
                 }
                 ch.places.insert(p.id.clone(), (Some(None), Some(false)));
             } else if !collapsed.is_empty() {
+                if !restore && respan(s, &p.id, before, &caret) {
+                    doc_changed = true;
+                    ch.places.insert(p.id.clone(), (Some(None), Some(false)));
+                    continue;
+                }
                 for c in collapsed.iter().skip(1).rev() {
                     places::remove(&mut s.doc, c);
                     doc_changed = true;
@@ -318,7 +351,11 @@ pub fn reconcile(s: &mut Session, restore: bool, before: &Before) {
                     ch.places.insert(p.id.clone(), (None, Some(true)));
                 }
             } else if !p.hidden {
-                if let Some(text) = before.texts.get(&p.id) {
+                if before.texts.contains_key(&p.id) && respan(s, &p.id, before, &caret) {
+                    // Replaced by this command: it spans the new text.
+                    doc_changed = true;
+                    ch.places.insert(p.id.clone(), (Some(None), Some(false)));
+                } else if let Some(text) = before.texts.get(&p.id) {
                     // Deleted by this command: it stays where the text was.
                     let at = s.doc.clamp(&caret);
                     let _ = places::insert(&mut s.doc, &name, &at, &at);

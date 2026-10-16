@@ -918,3 +918,40 @@ fn a_rejection_with_a_comment_is_a_follow_up_in_the_topic() {
     assert_eq!(topics_of(&mut s)["topics"][0]["proposal"]["state"], "pending");
     assert!(!agent(&mut s, "agent.questions", json!({"status": "pending"})).unwrap().to_string().contains("I rejected"));
 }
+
+// ---------------------------------------------------------------- C: a replacement stays inside its place
+
+#[test]
+fn replacing_a_whole_bookmarked_paragraph_keeps_the_place_over_the_new_text() {
+    let mut s = letter();
+    // The place is the whole paragraph.
+    let t = topic_on(&mut s, "Our fee is fixed and payable in advance.");
+    // The agent replaces the paragraph (at {paragraph}: the whole of it).
+    agent(
+        &mut s,
+        "agent.exec",
+        json!({"command": "text.insert", "params": {"text": "Our fee is fixed and payable within 30 days."}, "at": {"paragraph": 2}, "reason": "standard term"}),
+    )
+    .unwrap();
+    let p = &topics_of(&mut s)["topics"][0]["places"][0];
+    assert_eq!(p["quote"], "Our fee is fixed and payable within 30 days.", "{p}");
+    assert!(p.get("removed").is_none());
+    // Applying a proposal that replaces a quoted part of a place: the same.
+    let t2 = topic_on(&mut s, "31 December");
+    agent(
+        &mut s,
+        "agent.exec",
+        json!({"command": "text.insert", "params": {"text": "30 June"}, "at": {"paragraph": 3, "quote": "31 December"}, "reason": "fiscal year", "topic": t2}),
+    )
+    .unwrap();
+    s.run("agent.applyProposal", &json!({"topic": t2})).unwrap();
+    let ts = topics_of(&mut s);
+    let q = ts["topics"].as_array().unwrap().iter().find(|x| x["id"] == t2.as_str()).unwrap()["places"][0].clone();
+    assert_eq!(q["quote"], "30 June", "{q}");
+    // A person typing over a place: the place follows the new text too; deleting still leaves it removed.
+    select(&mut s, "30 June");
+    s.run("text.insert", &json!({"text": "1 July"})).unwrap();
+    let ts = topics_of(&mut s);
+    assert_eq!(ts["topics"].as_array().unwrap().iter().find(|x| x["id"] == t2.as_str()).unwrap()["places"][0]["quote"], "1 July");
+    let _ = t;
+}
