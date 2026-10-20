@@ -68,6 +68,20 @@ pub(crate) fn show(st: &mut AgentUi, app: &mut WordApp, ui: &mut Ui) {
             });
             ui.separator();
             let l = wordcraft_agent::layer(&app.session);
+            // A layer this build couldn't read: kept in the file as it is, changes here aren't saved.
+            if let Some(why) = &l.origin.unreadable {
+                egui::Frame::NONE.fill(p.pending.gamma_multiply(0.12)).corner_radius(4.0).inner_margin(6.0).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(RichText::new("This file's agent layer couldn't be read").small().strong().color(p.pending));
+                    ui.label(
+                        RichText::new(format!(
+                            "It may come from a newer WordCraft ({why}). It stays in the file exactly as it is: saving won't change it, and topics added here aren't saved."
+                        ))
+                        .small(),
+                    );
+                });
+                ui.add_space(4.0);
+            }
             match st.tab {
                 Tab::Selection => {
                     // The question box at the very bottom; the cards above it scroll.
@@ -765,6 +779,7 @@ fn history_tab(ui: &mut Ui, l: &Layer, t: &Tokens, p: &Palette) {
     }
     for e in l.log.iter().rev().take(300) {
         let (who, color) = match e.actor {
+            _ if e.kind == "warning" => ("Reading the file".to_string(), p.pending),
             Actor::Agent => ("Agent".to_string(), p.agent),
             Actor::Human => (if e.who.is_empty() { "Person".to_string() } else { e.who.clone() }, p.person),
         };

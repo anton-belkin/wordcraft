@@ -111,6 +111,14 @@ upstream. Each one accepted upstream removes its lines from the patch.
   `/events` or channel stream connected, a `wait_for_questions` poll in the last minute (its calls
   carry `waiting`, so HTTP and stdio count alike), the background agent running. Stream polls carry
   `poll`, so neither counts as the agent's last tool call.
+- **A layer from another build loses nothing** (`layer.rs`, as GridCraft 55430b4). Unknown enum
+  values read as their default (an unknown context kind as no context of the document's own, so it
+  can't start an agent); list entries are read one by one, and one that can't be read is left out
+  with a warning in History ("Reading the file"); a save is a three-way merge of the file's JSON,
+  the layer as read and the layer now, so what this build didn't change goes back as the file had
+  it, unknown fields, values and unreadable entries included. A part that can't be read at all is
+  never overwritten (not even by a save after edits here), and the pane says so. A copy to send is
+  written fresh.
 - **The agent's editing reach** (`batch.rs`, `commands::aim`). `run_command` takes every editor
   command `list_commands` lists (all of them now, refused ones left out, with recipes); `at` is
   `{paragraph, quote?, occurrence?}`, `through` (and `throughQuote`) for a range over several

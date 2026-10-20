@@ -29,7 +29,7 @@ use crate::undo::{self, Op};
 pub use ready::*;
 
 /// Which context.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
     /// Only this document, the background client.
@@ -42,7 +42,7 @@ pub enum Kind {
 }
 
 /// How Claude Code comes in.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CodeWay {
     #[default]
@@ -511,3 +511,7 @@ mod ready {
         (out.status.success() && !p.is_empty() && Path::new(&p).is_dir()).then_some(p)
     }
 }
+
+crate::layer::lenient_enum!(Kind, [Kind::None, Kind::Cowork, Kind::Code]);
+
+crate::layer::lenient_enum!(CodeWay, [CodeWay::Session, CodeWay::Folder]);

@@ -656,6 +656,8 @@ fn propose_agreed(s: &mut Session, v: &Json) -> CmdResult {
 /// their lines in the history) only with `include`.
 pub fn for_sending(l: &crate::layer::Layer, include: bool) -> crate::layer::Layer {
     let mut l = l.clone();
+    // A copy to send is written fresh: what this build couldn't read of the file stays home.
+    l.origin = crate::layer::Origin { unreadable: l.origin.unreadable.clone(), ..Default::default() };
     if !include {
         l.questions.clear();
         l.log.retain(|e| e.kind != "question" && e.command != "agent.answer");

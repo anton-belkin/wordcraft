@@ -1254,3 +1254,137 @@ fn list_commands_shows_everything_run_command_takes_and_how() {
     let found = crate::mcp::call(&mut h, "list_commands", &json!({"search": "numbering"})).unwrap();
     assert!(found["commands"][0]["params"].is_string() || found["commands"][0]["params"].is_null());
 }
+
+// ---------------------------------------------------------------- a layer from another build
+
+/// A document whose agent layer is this JSON (as another build wrote it).
+fn doc_with_layer(json: &str) -> Document {
+    let mut doc = Document::from_text("Engagement letter\nOur fee is fixed and payable in advance.");
+    let xml = format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<agentLayer xmlns=\"{}\"><![CDATA[{json}]]></agentLayer>", crate::layer::NS);
+    doc.passthrough.insert(crate::layer::PART_NAME.into(), std::sync::Arc::new(xml.into_bytes()));
+    // The bookkeeping a save of the part writes (so it goes into the .docx).
+    let rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/customXml";
+    doc.passthrough.insert("wordcraft:customXml.roots".into(), std::sync::Arc::new(format!("D\t{rel}\t{}\n", crate::layer::PART_NAME).into_bytes()));
+    doc.passthrough
+        .insert("wordcraft:embedded.parts".into(), std::sync::Arc::new(format!("P\t{}\tapplication/xml\n", crate::layer::PART_NAME).into_bytes()));
+    doc
+}
+
+/// The layer's JSON as a document holds it.
+fn layer_json(doc: &Document) -> Value {
+    let part = doc.passthrough.values().find(|b| std::str::from_utf8(b).is_ok_and(|t| t.contains(crate::layer::NS))).unwrap();
+    let text = std::str::from_utf8(part).unwrap();
+    let start = text.find("<![CDATA[").unwrap() + 9;
+    let end = text.rfind("]]>").unwrap();
+    serde_json::from_str(&text[start..end]).unwrap()
+}
+
+const NEWER: &str = r#"{
+    "version": 3, "next_id": 20, "futureSetting": {"x": 1},
+    "anchors": [{"id": "a1", "path": [1], "start": 21, "end": 39, "quote": "payable in advance"}],
+    "topics": [
+        {"id": "t1", "places": [{"id": "p1", "anchor": "a1"}], "status": {"kind": "open", "text": "", "by": "human", "at": 1}, "priority": "high", "created_at": 1},
+        {"id": "t9", "places": "this is not a list", "status": {"kind": "open"}},
+        {"id": "t5", "places": [], "status": {"kind": "blocked", "text": "waiting for legal", "by": "human", "at": 2}, "created_at": 2}
+    ],
+    "questions": [
+        {"id": "q2", "anchor": "a1", "text": "Why?", "status": "answered", "seen": true, "topic": "t1", "answer": {"text": "Because."}},
+        {"id": "q3", "anchor": "a1", "text": "Later?", "status": "snoozed", "topic": "t1"}
+    ],
+    "context": {"kind": "codex", "code": "session"},
+    "log": [{"seq": 1, "at": 1, "actor": "robot", "kind": "decision", "text": "started"}]
+}"#;
+
+#[test]
+fn a_layer_from_a_newer_build_loses_nothing() {
+    let doc = doc_with_layer(NEWER);
+    let l = crate::layer::read_from(&doc);
+    assert!(l.origin.unreadable.is_none());
+    // Everything readable is there; the corrupt topic is left out with a warning in the history.
+    let ids: Vec<&str> = l.topics.iter().map(|t| t.id.as_str()).collect();
+    assert_eq!(ids, vec!["t1", "t5"]);
+    assert_eq!(l.questions.len(), 2);
+    assert!(l.log.iter().any(|e| e.kind == "warning" && e.text.contains("t9")), "{:?}", l.log);
+    // Unknown values read as defaults; an unknown context is no context of the document's own.
+    assert_eq!(l.topic("t5").unwrap().status.kind, crate::layer::StatusKind::Open);
+    assert_eq!(l.questions[1].status, QuestionStatus::Pending);
+    assert_eq!(l.log[0].actor, crate::Actor::Human);
+    assert!(l.context.is_none(), "an unknown context doesn't become a mode that could start an agent");
+    // Saved without a change: what the file had goes back, unknown parts included.
+    let mut out = doc.clone();
+    crate::layer::write_into(&mut out, &l);
+    let j = layer_json(&out);
+    assert_eq!(j["futureSetting"], json!({"x": 1}));
+    assert_eq!(j["context"]["kind"], json!("codex"));
+    assert_eq!(j["topics"][0]["priority"], json!("high"));
+    let topic = |j: &Value, id: &str| j["topics"].as_array().unwrap().iter().find(|t| t["id"] == json!(id)).cloned().unwrap();
+    assert_eq!(topic(&j, "t9")["places"], json!("this is not a list"));
+    assert_eq!(topic(&j, "t5")["status"]["kind"], json!("blocked"));
+    assert_eq!(j["questions"][1]["status"], json!("snoozed"));
+    assert_eq!(j["log"][0]["actor"], json!("robot"));
+    // Changed here: the change is saved, and the rest of the unknown still goes back.
+    let mut l2 = l.clone();
+    l2.topics.iter_mut().find(|t| t.id == "t1").unwrap().status.text = "agreed with legal".into();
+    l2.questions.retain(|q| q.id != "q3");
+    let mut out = doc.clone();
+    crate::layer::write_into(&mut out, &l2);
+    let j = layer_json(&out);
+    assert_eq!((topic(&j, "t1")["status"]["text"].clone(), topic(&j, "t1")["priority"].clone()), (json!("agreed with legal"), json!("high")));
+    assert!(j["topics"].as_array().unwrap().iter().any(|t| t["id"] == json!("t9")), "the entry this build couldn't read stays");
+    assert_eq!(j["questions"].as_array().unwrap().len(), 1, "a question this build removed is gone");
+    assert_eq!(j["futureSetting"], json!({"x": 1}));
+    let again = crate::layer::read_from(&out);
+    assert_eq!(again.topic("t1").unwrap().status.text, "agreed with legal");
+}
+
+#[test]
+fn a_layer_that_cant_be_read_is_never_overwritten() {
+    let bad = r#"{"version": 3, "topics": [ {"id": "t1",  oops this isn't JSON"#;
+    let doc = doc_with_layer(bad);
+    let l = crate::layer::read_from(&doc);
+    assert!(l.origin.unreadable.as_deref().is_some_and(|w| w.contains("isn't valid JSON")), "{:?}", l.origin.unreadable);
+    // Even after changes in this session, the part stays byte for byte.
+    let mut l2 = l.clone();
+    l2.log(crate::layer::LogEntry { kind: "decision".into(), text: "something".into(), ..Default::default() });
+    let mut out = doc.clone();
+    crate::layer::write_into(&mut out, &l2);
+    assert_eq!(doc.passthrough.get(crate::layer::PART_NAME), out.passthrough.get(crate::layer::PART_NAME));
+    // A layer made only of what this build doesn't know isn't dropped as empty either.
+    let doc = doc_with_layer(r#"{"version": 9, "somethingNew": [1, 2, 3]}"#);
+    let l = crate::layer::read_from(&doc);
+    let mut out = doc.clone();
+    crate::layer::write_into(&mut out, &l);
+    assert_eq!(layer_json(&out)["somethingNew"], json!([1, 2, 3]));
+}
+
+#[test]
+fn saving_a_file_from_a_newer_build_keeps_its_layer() {
+    crate::install();
+    let dir = std::env::temp_dir().join(format!("wordcraft-agent-newer-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (name, json) in [("newer.docx", NEWER), ("broken.docx", r#"{"topics": [ oops"#)] {
+        let path = dir.join(name);
+        // Written by "another build": the part as it is, through a save.
+        let mut s = Session::new(doc_with_layer(json));
+        s.run("file.saveAs", &json!({"path": path.to_string_lossy()})).unwrap();
+        // Opened here, edited, asked about, saved.
+        let doc = wordcraft_docx::read(&std::fs::read(&path).unwrap()).unwrap();
+        let mut s = Session::new(doc);
+        s.author = "Reviewer".into();
+        s.run("select.text", &json!({"text": "fixed"})).unwrap();
+        s.run("agent.ask", &json!({"text": "Fixed?"})).unwrap();
+        s.run("file.saveAs", &json!({"path": path.to_string_lossy()})).unwrap();
+        let saved = wordcraft_docx::read(&std::fs::read(&path).unwrap()).unwrap();
+        let text =
+            saved.passthrough.values().filter_map(|b| std::str::from_utf8(b).ok()).find(|t| t.contains(crate::layer::NS)).unwrap_or("").to_string();
+        if name == "newer.docx" {
+            let j = layer_json(&saved);
+            assert_eq!(j["futureSetting"], json!({"x": 1}), "unknown parts go back");
+            assert!(j["topics"].as_array().unwrap().iter().any(|t| t["id"] == json!("t9")));
+            assert!(j["questions"].as_array().unwrap().iter().any(|q| q["text"] == json!("Fixed?")), "the new question is saved");
+        } else {
+            assert!(text.contains(r#"{"topics": [ oops"#), "an unreadable layer is kept as it was: {text}");
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
